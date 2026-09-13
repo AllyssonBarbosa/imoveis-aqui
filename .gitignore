@@ -1,0 +1,25 @@
+# ===== Python / Django (pasta Web/) =====
+Web/venv/
+Web/env/
+Web/__pycache__/
+Web/*.pyc
+Web/.env
+Web/db.sqlite3
+Web/staticfiles/
+Web/media/
+
+# ===== Flutter / Dart (pasta App/) =====
+App/.dart_tool/
+App/.flutter-plugins
+App/.flutter-plugins-dependencies
+App/build/
+App/.packages
+App/ios/Pods/
+App/android/.gradle/
+App/**/*.iml
+
+# ===== Geral =====
+.vscode/
+.idea/
+.DS_Store
+*.log
