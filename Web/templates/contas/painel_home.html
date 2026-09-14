@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block titulo %}Painel — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+<div class="cartao">
+    <h1>Olá, {{ user.nome }}</h1>
+    <p>Perfil: {{ user.get_perfil_display }}</p>
+    {% if user.empresa %}
+        <p>Empresa: {{ user.empresa }}</p>
+    {% endif %}
+
+    {% if user.perfil == "GESTOR" %}
+        <p><a class="botao" href="{% url 'contas:corretor_list' %}">Gerenciar corretores</a></p>
+    {% endif %}
+</div>
+{% endblock %}

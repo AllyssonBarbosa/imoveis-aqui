@@ -1,8 +1,8 @@
 # ===== Python / Django (pasta Web/) =====
 Web/venv/
 Web/env/
-Web/__pycache__/
-Web/*.pyc
+Web/**/__pycache__/
+Web/**/*.pyc
 Web/.env
 Web/db.sqlite3
 Web/staticfiles/

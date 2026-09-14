@@ -1,0 +1,27 @@
+{% load static %}<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block titulo %}Imóveis Aqui{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'css/painel.css' %}">
+</head>
+<body>
+    {% if user.is_authenticated %}
+    <header class="topbar">
+        <a class="marca" href="{% url 'contas:painel' %}">Imóveis Aqui</a>
+        <div class="usuario">
+            <span>{{ user.nome }} · {{ user.get_perfil_display }}</span>
+            <form method="post" action="{% url 'contas:logout' %}">
+                {% csrf_token %}
+                <button type="submit" class="secundario">Sair</button>
+            </form>
+        </div>
+    </header>
+    {% endif %}
+
+    <main class="pagina">
+        {% block conteudo %}{% endblock %}
+    </main>
+</body>
+</html>

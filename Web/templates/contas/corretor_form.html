@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block titulo %}Novo corretor — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+<div class="cartao">
+    <h1>Novo corretor</h1>
+
+    <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Cadastrar</button>
+        <a class="botao secundario" href="{% url 'contas:corretor_list' %}">Cancelar</a>
+    </form>
+</div>
+{% endblock %}
