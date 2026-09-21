@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block titulo %}Imóveis — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+<div class="cabecalho-pagina">
+    <h1>Imóveis</h1>
+    <a class="botao" href="{% url 'imoveis:imovel_create' %}">+ Novo imóvel</a>
+</div>
+
+{% if imoveis %}
+<table>
+    <thead>
+        <tr>
+            <th></th>
+            <th>Código</th>
+            <th>Título</th>
+            <th>Finalidade</th>
+            <th>Situação</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for imovel in imoveis %}
+        {% with capa=imovel.fotos.all|first %}
+        <tr>
+            <td>
+                {% if capa %}
+                    <img src="{{ capa.imagem.url }}" alt="" style="width:48px;height:36px;object-fit:cover;border-radius:4px;">
+                {% endif %}
+            </td>
+            <td><a href="{% url 'imoveis:imovel_detail' imovel.pk %}">{{ imovel.codigo }}</a></td>
+            <td>{{ imovel.titulo }}</td>
+            <td>{{ imovel.get_finalidade_display }}</td>
+            <td>
+                {% if imovel.publicado %}
+                    <span class="situacao ativo">Publicado</span>
+                {% else %}
+                    <span class="situacao inativo">Rascunho</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% endwith %}
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="area-vazia">Nenhum imóvel cadastrado ainda — comece pelo botão acima.</p>
+{% endif %}
+{% endblock %}

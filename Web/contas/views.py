@@ -30,6 +30,11 @@ class GestorRequiredMixin(LoginRequiredMixin, UserPassesTestMixin):
         return self.request.user.perfil == Usuario.Perfil.GESTOR
 
 
+class CorretorRequiredMixin(LoginRequiredMixin, UserPassesTestMixin):
+    def test_func(self):
+        return self.request.user.perfil == Usuario.Perfil.CORRETOR
+
+
 class CorretorListView(GestorRequiredMixin, ListView):
     template_name = "contas/corretor_list.html"
     context_object_name = "corretores"

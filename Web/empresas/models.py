@@ -1,7 +1,7 @@
 from django.core.exceptions import ValidationError
 from django.db import models
 
-from core.validators import validar_imagem
+from core.validators import somente_digitos, validar_cnpj, validar_cpf, validar_imagem
 
 
 class Empresa(models.Model):
@@ -47,13 +47,22 @@ class Empresa(models.Model):
 
     def clean(self):
         super().clean()
+        if self.cnpj:
+            self.cnpj = somente_digitos(self.cnpj)
+        if self.cpf:
+            self.cpf = somente_digitos(self.cpf)
+
         if self.tipo == self.Tipo.IMOBILIARIA:
             if not self.cnpj:
                 raise ValidationError({"cnpj": "Imobiliária precisa de CNPJ."})
             if self.cpf:
                 raise ValidationError({"cpf": "Imobiliária não deve ter CPF."})
+            if not validar_cnpj(self.cnpj):
+                raise ValidationError({"cnpj": "CNPJ inválido."})
         elif self.tipo == self.Tipo.AUTONOMO:
             if not self.cpf:
                 raise ValidationError({"cpf": "Corretor autônomo precisa de CPF."})
             if self.cnpj:
                 raise ValidationError({"cnpj": "Corretor autônomo não deve ter CNPJ."})
+            if not validar_cpf(self.cpf):
+                raise ValidationError({"cpf": "CPF inválido."})

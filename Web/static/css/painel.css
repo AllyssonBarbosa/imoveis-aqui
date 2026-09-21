@@ -267,3 +267,255 @@ tbody tr:last-child td {
   margin-bottom: 0.5rem;
   font-size: 0.9rem;
 }
+
+/* Seções (blocos dentro de uma página de detalhe) */
+
+.secao {
+  background: var(--cor-superficie);
+  border: 1px solid var(--cor-borda);
+  border-radius: var(--raio);
+  box-shadow: var(--sombra);
+  padding: 1.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.secao h2 {
+  font-size: 1.05rem;
+  margin: 0 0 1rem;
+  color: var(--cor-texto);
+}
+
+.secao-cabecalho {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.secao-cabecalho h2 {
+  margin: 0;
+}
+
+/* Cabeçalho do imóvel: código + título + situação */
+
+.cabecalho-imovel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.cabecalho-imovel h1 {
+  margin: 0;
+}
+
+.cabecalho-imovel .codigo {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.85rem;
+  color: var(--cor-texto-suave);
+  background: var(--cor-fundo);
+  border: 1px solid var(--cor-borda);
+  border-radius: 6px;
+  padding: 0.15rem 0.5rem;
+}
+
+/* Linha de valores em destaque (preços) */
+
+.linha-valores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  margin: 0 0 1.25rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--cor-borda);
+}
+
+.valor-item .rotulo {
+  display: block;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--cor-texto-suave);
+  margin-bottom: 0.15rem;
+}
+
+.valor-item .valor {
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--cor-texto);
+}
+
+/* Chips de característica */
+
+.lista-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.lista-chips li {
+  background: var(--cor-fundo);
+  border: 1px solid var(--cor-borda);
+  border-radius: 999px;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.82rem;
+  color: var(--cor-texto-suave);
+}
+
+.texto-vazio {
+  color: var(--cor-texto-suave);
+  font-size: 0.9rem;
+  font-style: italic;
+}
+
+/* Checkbox / radio em grupo (ex.: características do formulário) */
+
+fieldset {
+  border: none;
+  padding: 0;
+  margin: 0 0 1rem;
+}
+
+.caracteristicas-campo ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.caracteristicas-campo ul li {
+  background: var(--cor-fundo);
+  border: 1px solid var(--cor-borda);
+  border-radius: 999px;
+  padding: 0.3rem 0.8rem;
+}
+
+.caracteristicas-campo ul label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 400;
+  font-size: 0.88rem;
+  color: var(--cor-texto);
+  margin: 0;
+  cursor: pointer;
+}
+
+.caracteristicas-campo ul input {
+  width: auto;
+}
+
+/* Grade de fotos */
+
+.grade-fotos {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 1rem;
+}
+
+.foto-card {
+  border: 1px solid var(--cor-borda);
+  border-radius: var(--raio);
+  overflow: hidden;
+  background: var(--cor-fundo);
+  display: flex;
+  flex-direction: column;
+}
+
+.foto-card .foto-moldura {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  background: var(--cor-borda);
+}
+
+.foto-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.foto-card .selo-capa {
+  position: absolute;
+  top: 0.4rem;
+  left: 0.4rem;
+  background: var(--cor-primaria);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+}
+
+.foto-card .foto-ordem {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+}
+
+.foto-card .foto-acoes {
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.foto-card .foto-acoes form {
+  margin: 0;
+}
+
+.foto-card .foto-acoes button {
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8rem;
+}
+
+.upload-fotos {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.upload-fotos input[type="file"] {
+  flex: 1;
+  min-width: 220px;
+}
+
+.area-vazia {
+  border: 1px dashed var(--cor-borda);
+  border-radius: var(--raio);
+  padding: 2rem;
+  text-align: center;
+  color: var(--cor-texto-suave);
+  font-size: 0.9rem;
+}
+
+/* Grade de formulário (2 colunas em telas largas) */
+
+.grade-formulario {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0 1rem;
+}
+
+.grade-formulario p {
+  min-width: 0;
+}

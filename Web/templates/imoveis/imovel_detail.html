@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block titulo %}{{ imovel.codigo }} — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+{% if messages %}
+    <ul class="mensagens">
+        {% for mensagem in messages %}<li>{{ mensagem }}</li>{% endfor %}
+    </ul>
+{% endif %}
+
+<div class="cabecalho-imovel">
+    <span class="codigo">{{ imovel.codigo }}</span>
+    <h1>{{ imovel.titulo }}</h1>
+    {% if imovel.publicado %}
+        <span class="situacao ativo">Publicado</span>
+    {% else %}
+        <span class="situacao inativo">Rascunho</span>
+    {% endif %}
+    <form method="post" action="{% url 'imoveis:imovel_publicar' imovel.pk %}" style="margin-left:auto;">
+        {% csrf_token %}
+        <button type="submit" {% if imovel.publicado %}disabled{% endif %}>
+            {% if imovel.publicado %}Publicado{% else %}Publicar{% endif %}
+        </button>
+    </form>
+</div>
+
+<div class="secao">
+    <h2>Dados</h2>
+
+    {% if imovel.preco_venda or imovel.preco_aluguel or imovel.preco_condominio or imovel.preco_iptu %}
+    <div class="linha-valores">
+        {% if imovel.preco_venda %}
+        <div class="valor-item"><span class="rotulo">Venda</span><span class="valor">R$ {{ imovel.preco_venda }}</span></div>
+        {% endif %}
+        {% if imovel.preco_aluguel %}
+        <div class="valor-item"><span class="rotulo">Aluguel</span><span class="valor">R$ {{ imovel.preco_aluguel }}</span></div>
+        {% endif %}
+        {% if imovel.preco_condominio %}
+        <div class="valor-item"><span class="rotulo">Condomínio</span><span class="valor">R$ {{ imovel.preco_condominio }}</span></div>
+        {% endif %}
+        {% if imovel.preco_iptu %}
+        <div class="valor-item"><span class="rotulo">IPTU</span><span class="valor">R$ {{ imovel.preco_iptu }}</span></div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <p><strong>Finalidade:</strong> {{ imovel.get_finalidade_display }}</p>
+    <p><strong>Corretor responsável:</strong> {{ imovel.corretor_responsavel.nome }}</p>
+    <p><strong>Proprietário:</strong> {{ imovel.proprietario.nome_razao_social }}</p>
+    {% if imovel.descricao %}<p>{{ imovel.descricao }}</p>{% endif %}
+
+    {% if imovel.caracteristicas.all %}
+    <ul class="lista-chips">
+        {% for c in imovel.caracteristicas.all %}<li>{{ c.nome }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+</div>
+
+<div class="secao">
+    <h2>Endereço</h2>
+    <form method="post" action="{% url 'imoveis:imovel_atualizar_endereco' imovel.pk %}">
+        {% csrf_token %}
+        <div class="grade-formulario">
+            {% for field in endereco_form %}
+            <p>
+                {{ field.label_tag }}
+                {{ field }}
+                {{ field.errors }}
+            </p>
+            {% endfor %}
+        </div>
+        <button type="submit">Salvar endereço</button>
+    </form>
+</div>
+
+<div class="secao">
+    <div class="secao-cabecalho">
+        <h2>Fotos</h2>
+    </div>
+
+    <form method="post" action="{% url 'imoveis:imovel_upload_fotos' imovel.pk %}" enctype="multipart/form-data" class="upload-fotos">
+        {% csrf_token %}
+        <input type="file" name="fotos" multiple accept="image/*">
+        <button type="submit">Enviar fotos</button>
+    </form>
+
+    {% if imovel.fotos.all %}
+    <div class="grade-fotos">
+        {% for foto in imovel.fotos.all %}
+        <div class="foto-card">
+            <div class="foto-moldura">
+                <img src="{{ foto.imagem.url }}" alt="Foto {{ foto.ordem }} de {{ imovel.titulo }}">
+                {% if foto.capa %}<span class="selo-capa">Capa</span>{% endif %}
+                <span class="foto-ordem">#{{ foto.ordem }}</span>
+            </div>
+            <div class="foto-acoes">
+                {% if not foto.capa %}
+                <form method="post" action="{% url 'imoveis:imovel_definir_capa' imovel.pk foto.pk %}">
+                    {% csrf_token %}
+                    <button type="submit" class="secundario">Definir como capa</button>
+                </form>
+                {% endif %}
+                <form method="post" action="{% url 'imoveis:imovel_excluir_foto' imovel.pk foto.pk %}">
+                    {% csrf_token %}
+                    <button type="submit" class="perigo">Excluir</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="area-vazia">Nenhuma foto ainda — envie a primeira acima.</p>
+    {% endif %}
+</div>
+{% endblock %}
