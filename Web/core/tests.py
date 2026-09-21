@@ -5,7 +5,13 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from PIL import Image
 
-from .validators import TAMANHO_MAXIMO_IMAGEM_MB, validar_imagem
+from .validators import (
+    TAMANHO_MAXIMO_IMAGEM_MB,
+    somente_digitos,
+    validar_cnpj,
+    validar_cpf,
+    validar_imagem,
+)
 
 
 def gerar_imagem_valida(formato="PNG", largura=10, altura=10):
@@ -35,3 +41,29 @@ class ValidarImagemTests(TestCase):
         arquivo = SimpleUploadedFile("foto.png", b"nao sou um png de verdade", content_type="image/png")
         with self.assertRaises(ValidationError):
             validar_imagem(arquivo)
+
+
+class ValidarCpfCnpjTests(TestCase):
+    def test_cpf_valido_e_aceito(self):
+        self.assertTrue(validar_cpf("176.626.330-55"))
+
+    def test_cpf_com_digito_verificador_errado_e_recusado(self):
+        self.assertFalse(validar_cpf("176.626.330-00"))
+
+    def test_cpf_com_todos_os_digitos_iguais_e_recusado(self):
+        self.assertFalse(validar_cpf("111.111.111-11"))
+
+    def test_cpf_com_tamanho_errado_e_recusado(self):
+        self.assertFalse(validar_cpf("123"))
+
+    def test_cnpj_valido_e_aceito(self):
+        self.assertTrue(validar_cnpj("74.286.058/0001-80"))
+
+    def test_cnpj_com_digito_verificador_errado_e_recusado(self):
+        self.assertFalse(validar_cnpj("74.286.058/0001-00"))
+
+    def test_cnpj_com_todos_os_digitos_iguais_e_recusado(self):
+        self.assertFalse(validar_cnpj("11.111.111/1111-11"))
+
+    def test_somente_digitos_remove_pontuacao(self):
+        self.assertEqual(somente_digitos("176.626.330-55"), "17662633055")

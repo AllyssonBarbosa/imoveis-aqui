@@ -37,6 +37,8 @@ INSTALLED_APPS = [
     'localizacao',
     'empresas',
     'contas',
+    'proprietarios',
+    'imoveis',
 ]
 
 MIDDLEWARE = [

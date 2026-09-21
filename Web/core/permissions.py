@@ -16,3 +16,18 @@ class PertenceAUmaEmpresa(BasePermission):
             and request.user.is_authenticated
             and request.user.empresa_id is not None
         )
+
+
+class EhCorretor(BasePermission):
+    """Libera acesso só pro perfil corretor — gestor e administrador ficam de fora."""
+
+    message = "Este recurso é restrito ao corretor."
+
+    def has_permission(self, request, view):
+        from contas.models import Usuario
+
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and request.user.perfil == Usuario.Perfil.CORRETOR
+        )

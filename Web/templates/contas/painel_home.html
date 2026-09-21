@@ -13,5 +13,8 @@
     {% if user.perfil == "GESTOR" %}
         <p><a class="botao" href="{% url 'contas:corretor_list' %}">Gerenciar corretores</a></p>
     {% endif %}
+    {% if user.perfil == "CORRETOR" %}
+        <p><a class="botao secundario" href="{% url 'proprietarios:proprietario_list' %}">Proprietários</a></p>
+    {% endif %}
 </div>
 {% endblock %}

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block titulo %}Novo proprietário — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+<div class="cartao">
+    <h1>Novo proprietário</h1>
+
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Cadastrar</button>
+        <a class="botao secundario" href="{% url 'proprietarios:proprietario_list' %}">Cancelar</a>
+    </form>
+</div>
+{% endblock %}
