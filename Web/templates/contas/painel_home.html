@@ -15,6 +15,7 @@
     {% endif %}
     {% if user.perfil == "CORRETOR" %}
         <p><a class="botao secundario" href="{% url 'proprietarios:proprietario_list' %}">Proprietários</a></p>
+        <p><a class="botao secundario" href="{% url 'imoveis:imovel_list' %}">Imóveis</a></p>
     {% endif %}
 </div>
 {% endblock %}

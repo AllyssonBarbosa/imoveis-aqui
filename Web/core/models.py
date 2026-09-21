@@ -2,7 +2,12 @@ from django.db import models
 
 
 class Endereco(models.Model):
-    """Endereço reaproveitável — usado pela Empresa agora e pelo Imóvel em E2."""
+    """Endereço reaproveitável — usado pela Empresa e pelo Imóvel.
+
+    Latitude/longitude ficam opcionais: o endereço pode existir sem
+    coordenada ainda (rascunho), mas o Imóvel não pode ser publicado
+    sem as duas — ver Imovel.pode_publicar().
+    """
 
     logradouro = models.CharField(max_length=200)
     numero = models.CharField(max_length=20, blank=True)
@@ -12,6 +17,8 @@ class Endereco(models.Model):
     cidade = models.ForeignKey(
         "localizacao.Cidade", on_delete=models.PROTECT, related_name="enderecos"
     )
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
 
     class Meta:
         verbose_name = "endereço"

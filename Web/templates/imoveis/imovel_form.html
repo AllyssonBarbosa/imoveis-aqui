@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block titulo %}Novo imóvel — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+<div class="cartao">
+    <h1>Novo imóvel</h1>
+
+    <form method="post">
+        {% csrf_token %}
+        {{ form.non_field_errors }}
+
+        <div class="grade-formulario">
+            {% for field in form %}
+                {% if field.name != "caracteristicas" %}
+                <p>
+                    {{ field.label_tag }}
+                    {{ field }}
+                    {% if field.help_text %}<span class="helptext">{{ field.help_text }}</span>{% endif %}
+                    {{ field.errors }}
+                </p>
+                {% endif %}
+            {% endfor %}
+        </div>
+
+        <p>
+            {{ form.caracteristicas.label_tag }}
+            <div class="caracteristicas-campo">
+                {{ form.caracteristicas }}
+            </div>
+            {{ form.caracteristicas.errors }}
+        </p>
+
+        <button type="submit">Cadastrar</button>
+        <a class="botao secundario" href="{% url 'imoveis:imovel_list' %}">Cancelar</a>
+    </form>
+</div>
+{% endblock %}
