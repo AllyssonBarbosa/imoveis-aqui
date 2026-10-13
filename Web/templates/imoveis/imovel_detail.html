@@ -45,6 +45,7 @@
     </div>
     {% endif %}
 
+    <p><strong>Natureza:</strong> {{ imovel.get_natureza_display }}</p>
     <p><strong>Finalidade:</strong> {{ imovel.get_finalidade_display }}</p>
     <p><strong>Corretor responsável:</strong> {{ imovel.corretor_responsavel.nome }}</p>
     <p><strong>Proprietário:</strong> {{ imovel.proprietario.nome_razao_social }}</p>
@@ -55,6 +56,65 @@
         {% for c in imovel.caracteristicas.all %}<li>{{ c.nome }}</li>{% endfor %}
     </ul>
     {% endif %}
+</div>
+
+<div class="secao">
+    <h2>Dados {% if imovel.natureza == "CASA" %}da casa{% else %}do terreno{% endif %}</h2>
+
+    {% with d=imovel.detalhes %}
+    {% if d and imovel.natureza == "CASA" %}
+    <div class="linha-valores">
+        <div class="valor-item"><span class="rotulo">Terreno</span><span class="valor">{{ d.area_terreno }} m²</span></div>
+        <div class="valor-item"><span class="rotulo">Construída</span><span class="valor">{{ d.area_construida }} m²</span></div>
+        <div class="valor-item"><span class="rotulo">Área livre</span><span class="valor">{{ d.area_livre }} m²</span></div>
+    </div>
+    <p>
+        {{ d.quartos }} quarto{{ d.quartos|pluralize }} ({{ d.suites }} suíte{{ d.suites|pluralize }}) ·
+        {{ d.banheiros }} banheiro{{ d.banheiros|pluralize }} · {{ d.salas }} sala{{ d.salas|pluralize }} ·
+        {{ d.vagas }} vaga{{ d.vagas|pluralize }} · {{ d.pavimentos }} pavimento{{ d.pavimentos|pluralize }}
+        {% if d.ano_construcao %}· construída em {{ d.ano_construcao }}{% endif %}
+    </p>
+    <ul class="lista-chips">
+        {% if d.piscina %}<li>Piscina</li>{% endif %}
+        {% if d.quintal %}<li>Quintal</li>{% endif %}
+        {% if d.churrasqueira %}<li>Churrasqueira</li>{% endif %}
+        {% if d.mobiliada %}<li>Mobiliada</li>{% endif %}
+    </ul>
+    {% elif d %}
+    <div class="linha-valores">
+        <div class="valor-item"><span class="rotulo">Área total</span><span class="valor">{{ d.area_total }} m²</span></div>
+    </div>
+    <p>
+        Frente {{ d.frente }} m · fundo {{ d.fundo }} m ·
+        laterais {{ d.lateral_esquerda }} m e {{ d.lateral_direita }} m ·
+        {{ d.get_topografia_display }} · uso {{ d.get_uso_permitido_display|lower }}
+    </p>
+    <ul class="lista-chips">
+        {% if d.murado %}<li>Murado</li>{% endif %}
+        {% if d.esquina %}<li>De esquina</li>{% endif %}
+    </ul>
+    {% else %}
+    <p class="area-vazia">Ainda não preenchido — complete abaixo.</p>
+    {% endif %}
+    {% endwith %}
+
+    <form method="post" action="{% url 'imoveis:imovel_atualizar_detalhes' imovel.pk %}">
+        {% csrf_token %}
+        {{ detalhes_form.non_field_errors }}
+        <div class="grade-formulario">
+            {% for field in detalhes_form %}
+            <p>
+                {{ field.label_tag }}
+                {{ field }}
+                {{ field.errors }}
+            </p>
+            {% endfor %}
+        </div>
+        {% if imovel.natureza == "CASA" %}
+        <span class="helptext">A área livre é calculada pelo sistema: área do terreno − área construída.</span>
+        {% endif %}
+        <button type="submit">Salvar dados</button>
+    </form>
 </div>
 
 <div class="secao">

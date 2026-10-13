@@ -3,7 +3,7 @@ from functools import wraps
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.shortcuts import get_object_or_404, redirect
+from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 from django.views.generic import CreateView, DetailView, ListView
 
@@ -11,7 +11,7 @@ from contas.models import Usuario
 from contas.views import CorretorRequiredMixin
 from core.validators import validar_imagem
 
-from .forms import EnderecoForm, ImovelForm
+from .forms import EnderecoForm, ImovelForm, form_de_detalhes
 from .models import FotoImovel, Imovel
 
 
@@ -53,7 +53,11 @@ class ImovelCreateView(CorretorRequiredMixin, CreateView):
             return self.form_invalid(form)
         imovel.save()
         form.save_m2m()
-        messages.success(self.request, "Imóvel cadastrado. Agora complete o endereço e as fotos.")
+        messages.success(
+            self.request,
+            f"Imóvel cadastrado. Agora complete os dados da {imovel.get_natureza_display().lower()}, "
+            "o endereço e as fotos.",
+        )
         return redirect("imoveis:imovel_detail", pk=imovel.pk)
 
 
@@ -67,7 +71,31 @@ class ImovelDetailView(CorretorRequiredMixin, DetailView):
     def get_context_data(self, **kwargs):
         contexto = super().get_context_data(**kwargs)
         contexto["endereco_form"] = EnderecoForm(instance=self.object.endereco)
+        contexto["detalhes_form"] = form_de_detalhes(self.object)
         return contexto
+
+
+@corretor_required
+@require_POST
+def imovel_atualizar_detalhes(request, pk):
+    """Salva os dados próprios da natureza (casa ou terreno).
+
+    Com erro, a tela é renderizada de novo com o formulário preenchido,
+    pra mensagem aparecer ao lado do campo (ex.: área construída > terreno).
+    """
+    imovel = get_object_or_404(Imovel, pk=pk, empresa=request.user.empresa)
+    form = form_de_detalhes(imovel, request.POST)
+    if form.is_valid():
+        form.save()
+        messages.success(request, f"Dados da {imovel.get_natureza_display().lower()} salvos.")
+        return redirect("imoveis:imovel_detail", pk=pk)
+
+    messages.error(request, "Não deu pra salvar: confira os campos destacados.")
+    return render(request, "imoveis/imovel_detail.html", {
+        "imovel": imovel,
+        "endereco_form": EnderecoForm(instance=imovel.endereco),
+        "detalhes_form": form,
+    })
 
 
 @corretor_required

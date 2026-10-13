@@ -9,6 +9,7 @@ from core.permissions import EhCorretor
 
 from ..models import Caracteristica, FotoImovel, Imovel
 from .serializers import (
+    SERIALIZER_POR_NATUREZA,
     CaracteristicaSerializer,
     EnderecoSerializer,
     FotoImovelSerializer,
@@ -27,7 +28,7 @@ class CaracteristicaViewSet(viewsets.ReadOnlyModelViewSet):
 class ImovelViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
     serializer_class = ImovelSerializer
     permission_classes = [EhCorretor]
-    queryset = Imovel.objects.all()
+    queryset = Imovel.objects.select_related("casa", "terreno")
 
     @action(detail=True, methods=["get", "put"])
     def endereco(self, request, pk=None):
@@ -45,6 +46,24 @@ class ImovelViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
             imovel.endereco = endereco
             imovel.save(update_fields=["endereco"])
         return Response(EnderecoSerializer(endereco).data)
+
+    @action(detail=True, methods=["get", "put"])
+    def detalhes(self, request, pk=None):
+        """Dados próprios da natureza: os campos de casa ou de terreno, conforme o imóvel."""
+        imovel = self.get_object()
+        serializer_class = SERIALIZER_POR_NATUREZA[imovel.natureza]
+
+        if request.method == "GET":
+            if imovel.detalhes is None:
+                return Response(None)
+            return Response(serializer_class(imovel.detalhes).data)
+
+        serializer = serializer_class(
+            instance=imovel.detalhes, data=request.data, context={"imovel": imovel}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
     @action(detail=True, methods=["post"])
     def publicar(self, request, pk=None):
