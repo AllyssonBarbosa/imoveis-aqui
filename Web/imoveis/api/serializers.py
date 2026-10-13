@@ -1,9 +1,11 @@
-from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.exceptions import NON_FIELD_ERRORS, ValidationError as DjangoValidationError
+from django.db import transaction
 from rest_framework import serializers
+from rest_framework.settings import api_settings
 
 from core.models import Endereco
 
-from ..models import Caracteristica, Casa, FotoImovel, Imovel, Terreno
+from ..models import Apartamento, Caracteristica, Casa, FotoImovel, Imovel, Predio, Terreno
 
 
 class CaracteristicaSerializer(serializers.ModelSerializer):
@@ -19,6 +21,14 @@ class EnderecoSerializer(serializers.ModelSerializer):
             "id", "cep", "logradouro", "numero", "complemento", "bairro",
             "cidade", "latitude", "longitude",
         ]
+
+
+def _erros_do_model(erro):
+    """Converte o ValidationError do Django pro formato do DRF (__all__ vira non_field_errors)."""
+    erros = dict(erro.message_dict)
+    if NON_FIELD_ERRORS in erros:
+        erros[api_settings.NON_FIELD_ERRORS_KEY] = erros.pop(NON_FIELD_ERRORS)
+    return serializers.ValidationError(erros)
 
 
 class FotoImovelSerializer(serializers.ModelSerializer):
@@ -41,11 +51,58 @@ class DetalhesSerializerBase(serializers.ModelSerializer):
         try:
             instancia.full_clean(exclude=["imovel"])
         except DjangoValidationError as erro:
-            raise serializers.ValidationError(erro.message_dict)
+            raise _erros_do_model(erro)
         return attrs
 
     def create(self, validated_data):
         return self.Meta.model.objects.create(imovel=self.context["imovel"], **validated_data)
+
+
+class PredioSerializer(serializers.ModelSerializer):
+    """Prédio com o endereço aninhado — cadastrado uma vez, lido por todas as unidades."""
+
+    endereco = EnderecoSerializer()
+    total_apartamentos = serializers.IntegerField(source="apartamentos.count", read_only=True)
+
+    class Meta:
+        model = Predio
+        fields = [
+            "id", "nome", "endereco", "andares", "unidades_por_andar", "ano_construcao",
+            "elevadores", "portaria_24h", "piscina", "academia", "salao_de_festas",
+            "playground", "valor_condominio_base", "total_apartamentos",
+        ]
+        # a unicidade (empresa, nome) é checada no full_clean, com a mensagem em português
+        validators = []
+
+    def validate(self, attrs):
+        instancia = self.instance or Predio()
+        for campo, valor in attrs.items():
+            if campo != "endereco":
+                setattr(instancia, campo, valor)
+        instancia.empresa = self.context["request"].user.empresa
+        try:
+            instancia.full_clean(exclude=["endereco"])
+        except DjangoValidationError as erro:
+            raise _erros_do_model(erro)
+        return attrs
+
+    def create(self, validated_data):
+        dados_endereco = validated_data.pop("endereco")
+        with transaction.atomic():
+            endereco = Endereco.objects.create(**dados_endereco)
+            return Predio.objects.create(endereco=endereco, **validated_data)
+
+    def update(self, instance, validated_data):
+        dados_endereco = validated_data.pop("endereco", None)
+        with transaction.atomic():
+            if dados_endereco is not None:
+                for campo, valor in dados_endereco.items():
+                    setattr(instance.endereco, campo, valor)
+                instance.endereco.save()
+            for campo, valor in validated_data.items():
+                setattr(instance, campo, valor)
+            instance.save()
+        return instance
 
 
 class CasaSerializer(DetalhesSerializerBase):
@@ -69,16 +126,44 @@ class TerrenoSerializer(DetalhesSerializerBase):
         ]
 
 
+class ApartamentoSerializer(DetalhesSerializerBase):
+    """Na escrita, `predio` é o id; na leitura, vem o prédio inteiro (endereço, lazer...)."""
+
+    class Meta:
+        model = Apartamento
+        fields = [
+            "predio", "andar", "numero", "area_privativa", "area_total", "quartos", "suites",
+            "banheiros", "vagas", "varanda", "posicao_solar",
+        ]
+        # andar + número repetido no prédio é checado no full_clean, com a mensagem em português
+        validators = []
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        imovel = self.context.get("imovel")
+        if imovel is not None:
+            # prédio de outra empresa cai em "não existe", sem revelar que existe
+            self.fields["predio"].queryset = Predio.objects.filter(empresa=imovel.empresa)
+
+    def to_representation(self, instancia):
+        dados = super().to_representation(instancia)
+        dados["predio"] = PredioSerializer(instancia.predio).data
+        return dados
+
+
 SERIALIZER_POR_NATUREZA = {
     Imovel.Natureza.CASA: CasaSerializer,
     Imovel.Natureza.TERRENO: TerrenoSerializer,
+    Imovel.Natureza.APARTAMENTO: ApartamentoSerializer,
 }
 
 
 class ImovelSerializer(serializers.ModelSerializer):
-    endereco = EnderecoSerializer(read_only=True)
+    # apartamento mostra o endereço do prédio
+    endereco = EnderecoSerializer(source="endereco_do_anuncio", read_only=True)
     casa = serializers.SerializerMethodField()
     terreno = serializers.SerializerMethodField()
+    apartamento = serializers.SerializerMethodField()
     fotos = FotoImovelSerializer(many=True, read_only=True)
     pode_publicar = serializers.BooleanField(read_only=True)
 
@@ -87,7 +172,7 @@ class ImovelSerializer(serializers.ModelSerializer):
         fields = [
             "id", "codigo", "titulo", "natureza", "corretor_responsavel", "proprietario", "finalidade",
             "preco_venda", "preco_aluguel", "preco_condominio", "preco_iptu", "descricao",
-            "caracteristicas", "casa", "terreno", "endereco", "fotos", "publicado", "pode_publicar", "criado_em",
+            "caracteristicas", "casa", "terreno", "apartamento", "endereco", "fotos", "publicado", "pode_publicar", "criado_em",
         ]
         read_only_fields = ["id", "publicado", "endereco", "fotos", "pode_publicar", "criado_em"]
 
@@ -101,6 +186,9 @@ class ImovelSerializer(serializers.ModelSerializer):
 
     def get_terreno(self, imovel):
         return self._detalhes_se_for(imovel, Imovel.Natureza.TERRENO)
+
+    def get_apartamento(self, imovel):
+        return self._detalhes_se_for(imovel, Imovel.Natureza.APARTAMENTO)
 
     def validate_natureza(self, valor):
         if self.instance and valor != self.instance.natureza:

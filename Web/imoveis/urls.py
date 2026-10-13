@@ -14,4 +14,7 @@ urlpatterns = [
     path("<int:pk>/fotos/<int:foto_id>/capa/", views.imovel_definir_capa, name="imovel_definir_capa"),
     path("<int:pk>/fotos/<int:foto_id>/excluir/", views.imovel_excluir_foto, name="imovel_excluir_foto"),
     path("<int:pk>/publicar/", views.imovel_publicar, name="imovel_publicar"),
+    path("predios/", views.PredioListView.as_view(), name="predio_list"),
+    path("predios/novo/", views.predio_create, name="predio_create"),
+    path("predios/<int:pk>/", views.predio_update, name="predio_update"),
 ]

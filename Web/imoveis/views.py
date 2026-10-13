@@ -5,14 +5,15 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
+from django.db import transaction
 from django.views.generic import CreateView, DetailView, ListView
 
 from contas.models import Usuario
 from contas.views import CorretorRequiredMixin
 from core.validators import validar_imagem
 
-from .forms import EnderecoForm, ImovelForm, form_de_detalhes
-from .models import FotoImovel, Imovel
+from .forms import EnderecoForm, ImovelForm, PredioForm, form_de_detalhes
+from .models import FotoImovel, Imovel, Predio
 
 
 def corretor_required(view_func):
@@ -102,6 +103,9 @@ def imovel_atualizar_detalhes(request, pk):
 @require_POST
 def imovel_atualizar_endereco(request, pk):
     imovel = get_object_or_404(Imovel, pk=pk, empresa=request.user.empresa)
+    if imovel.natureza == Imovel.Natureza.APARTAMENTO:
+        messages.error(request, "O endereço do apartamento é o do prédio — corrija pelo cadastro do prédio.")
+        return redirect("imoveis:imovel_detail", pk=pk)
     form = EnderecoForm(request.POST, instance=imovel.endereco)
     if form.is_valid():
         endereco = form.save()
@@ -164,3 +168,57 @@ def imovel_publicar(request, pk):
     except ValidationError as erro:
         messages.error(request, erro.messages[0])
     return redirect("imoveis:imovel_detail", pk=pk)
+
+
+class PredioListView(CorretorRequiredMixin, ListView):
+    template_name = "imoveis/predio_list.html"
+    context_object_name = "predios"
+
+    def get_queryset(self):
+        return Predio.objects.filter(empresa=self.request.user.empresa).select_related(
+            "endereco__cidade"
+        )
+
+
+def _salvar_predio(request, predio=None):
+    """Cadastro e edição do prédio — os dados do prédio e o endereço na mesma tela."""
+    predio_form = PredioForm(request.POST or None, instance=predio)
+    endereco_form = EnderecoForm(
+        request.POST or None, instance=predio.endereco if predio else None, prefix="endereco"
+    )
+
+    if request.method == "POST" and predio_form.is_valid() and endereco_form.is_valid():
+        novo = predio_form.save(commit=False)
+        novo.empresa = request.user.empresa
+        try:
+            novo.full_clean(exclude=["endereco"])
+        except ValidationError as erro:
+            predio_form._update_errors(erro)
+        else:
+            with transaction.atomic():
+                novo.endereco = endereco_form.save()
+                novo.save()
+            if predio:
+                messages.success(
+                    request, "Prédio atualizado — os anúncios de todos os apartamentos já mostram a mudança."
+                )
+            else:
+                messages.success(request, "Prédio cadastrado. Agora é só ligar os apartamentos a ele.")
+            return redirect("imoveis:predio_list")
+
+    return render(request, "imoveis/predio_form.html", {
+        "predio": predio,
+        "form": predio_form,
+        "endereco_form": endereco_form,
+    })
+
+
+@corretor_required
+def predio_create(request):
+    return _salvar_predio(request)
+
+
+@corretor_required
+def predio_update(request, pk):
+    predio = get_object_or_404(Predio, pk=pk, empresa=request.user.empresa)
+    return _salvar_predio(request, predio)

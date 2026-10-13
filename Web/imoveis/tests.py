@@ -16,7 +16,7 @@ from empresas.models import Empresa
 from localizacao.models import Cidade
 from proprietarios.models import Proprietario
 
-from .models import Caracteristica, Casa, FotoImovel, Imovel, Terreno
+from .models import Apartamento, Caracteristica, Casa, FotoImovel, Imovel, Predio, Terreno
 
 
 def criar_empresa(nome="Imobiliária Teste", cnpj="74.286.058/0001-80"):
@@ -496,6 +496,11 @@ class PainelCasaTerrenoTests(TestCase):
         self.assertNotIn("area_livre", campos)
         self.assertNotContains(response, 'name="topografia"')
 
+    def test_tela_sem_dados_ainda_mostra_que_falta_preencher(self):
+        response = self.client.get(reverse("imoveis:imovel_detail", args=[self.casa.pk]))
+        self.assertContains(response, "Ainda não preenchido")
+        self.assertNotContains(response, "None m²")
+
     def test_tela_do_terreno_mostra_so_campos_de_terreno(self):
         response = self.client.get(reverse("imoveis:imovel_detail", args=[self.terreno.pk]))
         campos = set(response.context["detalhes_form"].fields)
@@ -619,3 +624,360 @@ class ApiCasaTerrenoTests(APITestCase):
             reverse("imovel-detalhes", args=[de_fora.pk]), DADOS_CASA, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+def criar_predio(empresa, nome="Edifício Aurora", cidade=None, **extra):
+    cidade = cidade or Cidade.objects.get_or_create(nome="São Paulo", uf="SP")[0]
+    endereco = Endereco.objects.create(
+        logradouro="Av. Paulista", numero="1000", cidade=cidade,
+        latitude="-23.56", longitude="-46.65",
+    )
+    dados = dict(
+        empresa=empresa, nome=nome, endereco=endereco, andares=10, unidades_por_andar=4,
+        ano_construcao=2010, elevadores=2, portaria_24h=True, piscina=True,
+        valor_condominio_base="800.00",
+    )
+    dados.update(extra)
+    return Predio.objects.create(**dados)
+
+
+def dados_apartamento(predio, **extra):
+    dados = {
+        "predio": predio.pk, "andar": 3, "numero": "31", "area_privativa": "70.00",
+        "area_total": "90.00", "quartos": 2, "suites": 1, "banheiros": 2, "vagas": 1,
+        "varanda": True, "posicao_solar": Apartamento.PosicaoSolar.NASCENTE,
+    }
+    dados.update(extra)
+    return dados
+
+
+def criar_apartamento(imovel, predio, **extra):
+    dados = dados_apartamento(predio, **extra)
+    dados["predio"] = predio
+    return Apartamento.objects.create(imovel=imovel, **dados)
+
+
+class PredioApartamentoModelTests(TestCase):
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        self.predio = criar_predio(self.empresa)
+        self.apto = criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="AP1",
+            natureza=Imovel.Natureza.APARTAMENTO,
+        )
+        self.apto2 = criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="AP2",
+            natureza=Imovel.Natureza.APARTAMENTO,
+        )
+
+    def _apartamento(self, imovel, **extra):
+        dados = dados_apartamento(self.predio, **extra)
+        dados["predio"] = self.predio
+        return Apartamento(imovel=imovel, **dados)
+
+    def test_cadastro_de_apartamento_ligado_ao_predio(self):
+        apartamento = self._apartamento(self.apto)
+        apartamento.full_clean()
+        apartamento.save()
+        self.assertEqual(self.predio.apartamentos.count(), 1)
+
+    def test_mesmo_andar_e_numero_no_mesmo_predio_e_recusado(self):
+        criar_apartamento(self.apto, self.predio)
+        duplicado = self._apartamento(self.apto2)
+        with self.assertRaises(ValidationError) as contexto:
+            duplicado.full_clean()
+        self.assertIn(
+            "Já existe um apartamento com esse andar e número neste prédio.",
+            contexto.exception.messages,
+        )
+
+    def test_banco_tambem_recusa_andar_e_numero_repetidos(self):
+        criar_apartamento(self.apto, self.predio)
+        with self.assertRaises(IntegrityError):
+            criar_apartamento(self.apto2, self.predio)
+
+    def test_mesmo_numero_em_outro_andar_e_aceito(self):
+        criar_apartamento(self.apto, self.predio)
+        self._apartamento(self.apto2, andar=4).full_clean()
+
+    def test_mesmo_andar_e_numero_em_outro_predio_e_aceito(self):
+        criar_apartamento(self.apto, self.predio)
+        outro_predio = criar_predio(self.empresa, nome="Edifício Boreal")
+        apartamento = self._apartamento(self.apto2)
+        apartamento.predio = outro_predio
+        apartamento.full_clean()
+
+    def test_andar_acima_do_predio_e_recusado(self):
+        with self.assertRaises(ValidationError) as contexto:
+            self._apartamento(self.apto, andar=11).full_clean()
+        self.assertIn("andar", contexto.exception.message_dict)
+
+    def test_area_privativa_maior_que_total_e_recusada(self):
+        with self.assertRaises(ValidationError) as contexto:
+            self._apartamento(self.apto, area_privativa="100.00").full_clean()
+        self.assertIn("area_privativa", contexto.exception.message_dict)
+
+    def test_predio_de_outra_empresa_e_recusado(self):
+        outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        predio_de_fora = criar_predio(outra_empresa)
+        apartamento = self._apartamento(self.apto)
+        apartamento.predio = predio_de_fora
+        with self.assertRaises(ValidationError) as contexto:
+            apartamento.full_clean()
+        self.assertIn("predio", contexto.exception.message_dict)
+
+    def test_apartamento_nao_entra_em_casa(self):
+        casa = criar_imovel(self.empresa, self.corretor, self.proprietario, codigo="CASA")
+        with self.assertRaises(ValidationError):
+            self._apartamento(casa).full_clean()
+
+    def test_nome_de_predio_repetido_na_empresa_e_recusado(self):
+        repetido = Predio(
+            empresa=self.empresa, nome="Edifício Aurora", andares=5, unidades_por_andar=2,
+        )
+        with self.assertRaises(ValidationError):
+            repetido.full_clean(exclude=["endereco"])
+
+    def test_apartamento_usa_endereco_do_predio_para_publicar(self):
+        criar_apartamento(self.apto, self.predio)
+        self.assertEqual(self.apto.endereco_do_anuncio, self.predio.endereco)
+        self.assertTrue(self.apto.pode_publicar())
+
+    def test_apartamento_sem_predio_ainda_nao_publica(self):
+        self.assertFalse(self.apto.pode_publicar())
+
+    def test_alterar_predio_reflete_em_todas_as_unidades(self):
+        criar_apartamento(self.apto, self.predio)
+        criar_apartamento(self.apto2, self.predio, numero="32")
+
+        self.predio.academia = True
+        self.predio.save()
+
+        for imovel in (self.apto, self.apto2):
+            imovel = Imovel.objects.get(pk=imovel.pk)
+            self.assertTrue(imovel.detalhes.predio.academia)
+
+
+class PainelPredioApartamentoTests(TestCase):
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        self.cidade = Cidade.objects.create(nome="São Paulo", uf="SP")
+        self.predio = criar_predio(self.empresa, cidade=self.cidade)
+        self.apto = criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="AP1",
+            natureza=Imovel.Natureza.APARTAMENTO,
+        )
+        self.client.force_login(self.corretor)
+
+    def _post_predio(self, url, **extra):
+        dados = {
+            "nome": "Edifício Novo", "andares": 8, "unidades_por_andar": 2,
+            "ano_construcao": 2018, "elevadores": 1, "portaria_24h": "on", "piscina": "on",
+            "valor_condominio_base": "650.00",
+            "endereco-logradouro": "Rua B", "endereco-numero": "20", "endereco-cep": "",
+            "endereco-complemento": "", "endereco-bairro": "Centro",
+            "endereco-cidade": self.cidade.pk, "endereco-latitude": "-23.5",
+            "endereco-longitude": "-46.6",
+        }
+        dados.update(extra)
+        return self.client.post(url, dados)
+
+    def test_gestor_nao_acessa_predios(self):
+        self.client.force_login(criar_gestor(self.empresa))
+        response = self.client.get(reverse("imoveis:predio_list"))
+        self.assertEqual(response.status_code, 403)
+
+    def test_cadastra_predio_com_endereco(self):
+        response = self._post_predio(reverse("imoveis:predio_create"))
+        self.assertRedirects(response, reverse("imoveis:predio_list"))
+        predio = Predio.objects.get(nome="Edifício Novo")
+        self.assertEqual(predio.empresa, self.empresa)
+        self.assertEqual(predio.endereco.logradouro, "Rua B")
+        self.assertTrue(predio.portaria_24h)
+
+    def test_nome_repetido_mostra_erro(self):
+        response = self._post_predio(reverse("imoveis:predio_create"), nome="Edifício Aurora")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Já existe um prédio com esse nome")
+
+    def test_lista_so_predios_da_propria_empresa(self):
+        outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        criar_predio(outra_empresa, nome="Prédio de fora")
+        response = self.client.get(reverse("imoveis:predio_list"))
+        nomes = [p.nome for p in response.context["predios"]]
+        self.assertEqual(nomes, ["Edifício Aurora"])
+
+    def test_editar_predio_de_outra_empresa_da_404(self):
+        outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        de_fora = criar_predio(outra_empresa, nome="Prédio de fora")
+        response = self.client.get(reverse("imoveis:predio_update", args=[de_fora.pk]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_editar_predio_reflete_no_detalhe_do_apartamento(self):
+        criar_apartamento(self.apto, self.predio)
+        self._post_predio(
+            reverse("imoveis:predio_update", args=[self.predio.pk]),
+            nome="Edifício Aurora", academia="on", **{"endereco-logradouro": "Rua Corrigida"},
+        )
+        response = self.client.get(reverse("imoveis:imovel_detail", args=[self.apto.pk]))
+        self.assertContains(response, "Academia")
+        self.assertContains(response, "Rua Corrigida")
+        self.assertEqual(Endereco.objects.filter(logradouro="Rua Corrigida").count(), 1)
+
+    def test_tela_do_apartamento_so_lista_predios_da_empresa(self):
+        outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        criar_predio(outra_empresa, nome="Prédio de fora")
+        response = self.client.get(reverse("imoveis:imovel_detail", args=[self.apto.pk]))
+        form = response.context["detalhes_form"]
+        self.assertEqual(list(form.fields["predio"].queryset), [self.predio])
+        self.assertNotIn("area_terreno", form.fields)
+
+    def test_salva_apartamento_e_detalhe_mostra_dados_do_predio(self):
+        dados = dados_de_formulario(dados_apartamento(self.predio))
+        response = self.client.post(
+            reverse("imoveis:imovel_atualizar_detalhes", args=[self.apto.pk]), dados
+        )
+        self.assertRedirects(response, reverse("imoveis:imovel_detail", args=[self.apto.pk]))
+        response = self.client.get(reverse("imoveis:imovel_detail", args=[self.apto.pk]))
+        self.assertContains(response, "Edifício Aurora")
+        self.assertContains(response, "Portaria 24h")
+        self.assertContains(response, "Av. Paulista")
+
+    def test_apartamento_repetido_mostra_mensagem_clara(self):
+        outro = criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="AP2",
+            natureza=Imovel.Natureza.APARTAMENTO,
+        )
+        criar_apartamento(outro, self.predio)
+        response = self.client.post(
+            reverse("imoveis:imovel_atualizar_detalhes", args=[self.apto.pk]),
+            dados_de_formulario(dados_apartamento(self.predio)),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Já existe um apartamento com esse andar e número neste prédio.")
+
+    def test_apartamento_nao_tem_endereco_proprio(self):
+        self.client.post(reverse("imoveis:imovel_atualizar_endereco", args=[self.apto.pk]), {
+            "logradouro": "Rua X", "cidade": self.cidade.pk,
+        })
+        self.apto.refresh_from_db()
+        self.assertIsNone(self.apto.endereco)
+
+
+class ApiPredioApartamentoTests(APITestCase):
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        self.cidade = Cidade.objects.create(nome="São Paulo", uf="SP")
+        self.predio = criar_predio(self.empresa, cidade=self.cidade)
+        self.apto = criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="AP1",
+            natureza=Imovel.Natureza.APARTAMENTO,
+        )
+        self.outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        self.predio_de_fora = criar_predio(self.outra_empresa, nome="Prédio de fora")
+        self.client.force_authenticate(self.corretor)
+
+    def test_cria_predio_com_endereco(self):
+        response = self.client.post(reverse("predio-list"), {
+            "nome": "Edifício Novo", "andares": 5, "unidades_por_andar": 2, "elevadores": 1,
+            "academia": True,
+            "endereco": {"logradouro": "Rua B", "cidade": self.cidade.pk},
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        predio = Predio.objects.get(pk=response.data["id"])
+        self.assertEqual(predio.empresa, self.empresa)
+        self.assertEqual(predio.endereco.logradouro, "Rua B")
+
+    def test_nome_repetido_e_recusado(self):
+        response = self.client.post(reverse("predio-list"), {
+            "nome": "Edifício Aurora", "andares": 5, "unidades_por_andar": 2,
+            "endereco": {"logradouro": "Rua B", "cidade": self.cidade.pk},
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_lista_so_predios_da_propria_empresa(self):
+        response = self.client.get(reverse("predio-list"))
+        self.assertEqual([p["nome"] for p in response.data], ["Edifício Aurora"])
+
+    def test_predio_de_outra_empresa_da_404(self):
+        response = self.client.get(reverse("predio-detail", args=[self.predio_de_fora.pk]))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_put_detalhes_do_apartamento(self):
+        response = self.client.put(
+            reverse("imovel-detalhes", args=[self.apto.pk]), dados_apartamento(self.predio),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["predio"]["nome"], "Edifício Aurora")
+
+    def test_detalhe_do_apartamento_traz_dados_do_predio(self):
+        criar_apartamento(self.apto, self.predio)
+        response = self.client.get(reverse("imovel-detail", args=[self.apto.pk]))
+        apartamento = response.data["apartamento"]
+        self.assertEqual(apartamento["numero"], "31")
+        self.assertEqual(apartamento["predio"]["nome"], "Edifício Aurora")
+        self.assertTrue(apartamento["predio"]["portaria_24h"])
+        self.assertEqual(apartamento["predio"]["endereco"]["logradouro"], "Av. Paulista")
+        self.assertEqual(response.data["endereco"]["logradouro"], "Av. Paulista")
+        self.assertIsNone(response.data["casa"])
+
+    def test_alterar_predio_reflete_no_detalhe_de_todos_os_apartamentos(self):
+        outro = criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="AP2",
+            natureza=Imovel.Natureza.APARTAMENTO,
+        )
+        criar_apartamento(self.apto, self.predio)
+        criar_apartamento(outro, self.predio, numero="32")
+
+        response = self.client.patch(reverse("predio-detail", args=[self.predio.pk]), {
+            "playground": True, "endereco": {"logradouro": "Rua Corrigida", "cidade": self.cidade.pk},
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+        for imovel in (self.apto, outro):
+            detalhe = self.client.get(reverse("imovel-detail", args=[imovel.pk])).data
+            self.assertTrue(detalhe["apartamento"]["predio"]["playground"])
+            self.assertEqual(detalhe["endereco"]["logradouro"], "Rua Corrigida")
+
+    def test_apartamento_repetido_e_recusado_com_mensagem(self):
+        outro = criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="AP2",
+            natureza=Imovel.Natureza.APARTAMENTO,
+        )
+        criar_apartamento(outro, self.predio)
+        response = self.client.put(
+            reverse("imovel-detalhes", args=[self.apto.pk]), dados_apartamento(self.predio),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn(
+            "Já existe um apartamento com esse andar e número neste prédio.",
+            [str(m) for m in response.data["non_field_errors"]],
+        )
+
+    def test_nao_liga_apartamento_a_predio_de_outra_empresa(self):
+        response = self.client.put(
+            reverse("imovel-detalhes", args=[self.apto.pk]),
+            dados_apartamento(self.predio_de_fora), format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("predio", response.data)
+
+    def test_nao_exclui_predio_com_apartamentos(self):
+        criar_apartamento(self.apto, self.predio)
+        response = self.client.delete(reverse("predio-detail", args=[self.predio.pk]))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(Predio.objects.filter(pk=self.predio.pk).exists())
+
+    def test_endereco_proprio_do_apartamento_e_recusado(self):
+        response = self.client.put(reverse("imovel-endereco", args=[self.apto.pk]), {
+            "logradouro": "Rua X", "cidade": self.cidade.pk,
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

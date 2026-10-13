@@ -7,13 +7,14 @@ from rest_framework.response import Response
 from core.mixins import EmpresaScopedQuerySetMixin
 from core.permissions import EhCorretor
 
-from ..models import Caracteristica, FotoImovel, Imovel
+from ..models import Caracteristica, FotoImovel, Imovel, Predio
 from .serializers import (
     SERIALIZER_POR_NATUREZA,
     CaracteristicaSerializer,
     EnderecoSerializer,
     FotoImovelSerializer,
     ImovelSerializer,
+    PredioSerializer,
 )
 
 
@@ -28,16 +29,24 @@ class CaracteristicaViewSet(viewsets.ReadOnlyModelViewSet):
 class ImovelViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
     serializer_class = ImovelSerializer
     permission_classes = [EhCorretor]
-    queryset = Imovel.objects.select_related("casa", "terreno")
+    queryset = Imovel.objects.select_related(
+        "endereco", "casa", "terreno", "apartamento__predio__endereco"
+    )
 
     @action(detail=True, methods=["get", "put"])
     def endereco(self, request, pk=None):
         imovel = self.get_object()
 
         if request.method == "GET":
-            if not imovel.endereco:
+            if not imovel.endereco_do_anuncio:
                 return Response(None)
-            return Response(EnderecoSerializer(imovel.endereco).data)
+            return Response(EnderecoSerializer(imovel.endereco_do_anuncio).data)
+
+        if imovel.natureza == Imovel.Natureza.APARTAMENTO:
+            return Response(
+                {"detail": "O endereço do apartamento é o do prédio — altere pelo cadastro do prédio."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         serializer = EnderecoSerializer(instance=imovel.endereco, data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -73,6 +82,26 @@ class ImovelViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
         except DjangoValidationError as erro:
             return Response({"detail": erro.messages[0]}, status=status.HTTP_400_BAD_REQUEST)
         return Response(self.get_serializer(imovel).data)
+
+
+class PredioViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
+    """Prédios da própria empresa. Alterar aqui reflete em todos os apartamentos ligados."""
+
+    serializer_class = PredioSerializer
+    permission_classes = [EhCorretor]
+    queryset = Predio.objects.select_related("endereco")
+
+    def destroy(self, request, *args, **kwargs):
+        predio = self.get_object()
+        if predio.apartamentos.exists():
+            return Response(
+                {"detail": "Este prédio tem apartamentos ligados e não pode ser excluído."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        endereco = predio.endereco
+        predio.delete()
+        endereco.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class FotoImovelViewSet(viewsets.ModelViewSet):

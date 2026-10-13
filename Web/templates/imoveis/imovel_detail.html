@@ -59,7 +59,7 @@
 </div>
 
 <div class="secao">
-    <h2>Dados {% if imovel.natureza == "CASA" %}da casa{% else %}do terreno{% endif %}</h2>
+    <h2>Dados {% if imovel.natureza == "TERRENO" %}do terreno{% elif imovel.natureza == "APARTAMENTO" %}do apartamento{% else %}da casa{% endif %}</h2>
 
     {% with d=imovel.detalhes %}
     {% if d and imovel.natureza == "CASA" %}
@@ -80,6 +80,35 @@
         {% if d.churrasqueira %}<li>Churrasqueira</li>{% endif %}
         {% if d.mobiliada %}<li>Mobiliada</li>{% endif %}
     </ul>
+    {% elif d and imovel.natureza == "APARTAMENTO" %}
+    <div class="linha-valores">
+        <div class="valor-item"><span class="rotulo">Unidade</span><span class="valor">{{ d.numero }} · {{ d.andar }}º andar</span></div>
+        <div class="valor-item"><span class="rotulo">Privativa</span><span class="valor">{{ d.area_privativa }} m²</span></div>
+        <div class="valor-item"><span class="rotulo">Total</span><span class="valor">{{ d.area_total }} m²</span></div>
+    </div>
+    <p>
+        {{ d.quartos }} quarto{{ d.quartos|pluralize }} ({{ d.suites }} suíte{{ d.suites|pluralize }}) ·
+        {{ d.banheiros }} banheiro{{ d.banheiros|pluralize }} · {{ d.vagas }} vaga{{ d.vagas|pluralize }}
+        {% if d.posicao_solar %}· {{ d.get_posicao_solar_display }}{% endif %}
+    </p>
+    {% if d.varanda %}<ul class="lista-chips"><li>Varanda</li></ul>{% endif %}
+
+    {% with p=d.predio %}
+    <h3>Prédio: <a href="{% url 'imoveis:predio_update' p.pk %}">{{ p.nome }}</a></h3>
+    <p>
+        {{ p.andares }} andares · {{ p.unidades_por_andar }} unidade{{ p.unidades_por_andar|pluralize }} por andar ·
+        {{ p.elevadores }} elevador{{ p.elevadores|pluralize:"es" }}
+        {% if p.ano_construcao %}· construído em {{ p.ano_construcao }}{% endif %}
+        {% if p.valor_condominio_base %}· condomínio base R$ {{ p.valor_condominio_base }}{% endif %}
+    </p>
+    <ul class="lista-chips">
+        {% if p.portaria_24h %}<li>Portaria 24h</li>{% endif %}
+        {% if p.piscina %}<li>Piscina</li>{% endif %}
+        {% if p.academia %}<li>Academia</li>{% endif %}
+        {% if p.salao_de_festas %}<li>Salão de festas</li>{% endif %}
+        {% if p.playground %}<li>Playground</li>{% endif %}
+    </ul>
+    {% endwith %}
     {% elif d %}
     <div class="linha-valores">
         <div class="valor-item"><span class="rotulo">Área total</span><span class="valor">{{ d.area_total }} m²</span></div>
@@ -112,6 +141,11 @@
         </div>
         {% if imovel.natureza == "CASA" %}
         <span class="helptext">A área livre é calculada pelo sistema: área do terreno − área construída.</span>
+        {% elif imovel.natureza == "APARTAMENTO" %}
+        <span class="helptext">
+            Endereço, lazer e portaria vêm do prédio escolhido.
+            Não achou o prédio? <a href="{% url 'imoveis:predio_create' %}">Cadastre-o primeiro</a>.
+        </span>
         {% endif %}
         <button type="submit">Salvar dados</button>
     </form>
@@ -119,6 +153,12 @@
 
 <div class="secao">
     <h2>Endereço</h2>
+    {% if imovel.natureza == "APARTAMENTO" %}
+    {% if imovel.endereco_do_anuncio %}
+    <p>{{ imovel.endereco_do_anuncio }}{% if imovel.endereco_do_anuncio.cep %} — CEP {{ imovel.endereco_do_anuncio.cep }}{% endif %}</p>
+    {% endif %}
+    <p class="helptext">O endereço do apartamento é o do prédio. Para corrigir, edite o cadastro do prédio.</p>
+    {% else %}
     <form method="post" action="{% url 'imoveis:imovel_atualizar_endereco' imovel.pk %}">
         {% csrf_token %}
         <div class="grade-formulario">
@@ -132,6 +172,7 @@
         </div>
         <button type="submit">Salvar endereço</button>
     </form>
+    {% endif %}
 </div>
 
 <div class="secao">
