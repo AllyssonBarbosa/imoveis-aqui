@@ -2,9 +2,7 @@ from rest_framework import generics
 from rest_framework.permissions import AllowAny
 
 from empresas.api.serializers import CidadeSerializer
-from imoveis.vitrine import imoveis_da_vitrine
-
-from ..models import Cidade
+from imoveis.vitrine import cidades_atendidas
 
 
 class CidadeAtendidaAPIView(generics.ListAPIView):
@@ -19,4 +17,4 @@ class CidadeAtendidaAPIView(generics.ListAPIView):
     serializer_class = CidadeSerializer
 
     def get_queryset(self):
-        return Cidade.objects.filter(pk__in=imoveis_da_vitrine().values("cidade_anuncio"))
+        return cidades_atendidas()

@@ -120,6 +120,11 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 
 | Rota | O que é | Quem acessa |
 |---|---|---|
+| `/` | Site: início com a escolha da cidade | público, sem login |
+| `/cidade/<id>/` | Site: vitrine da cidade, com os mesmos filtros e ordenação da API | público, sem login |
+| `/imovel/<id>/` | Site: página do imóvel — galeria, dados da natureza, valores, mapa e WhatsApp | público, sem login |
+| `/empresa/<id>/` | Site: perfil da empresa, com os corretores e a vitrine dela | público, sem login |
+| `/corretor/<id>/` | Site: perfil do corretor, com a vitrine dele | público, sem login |
 | `/painel/login/` | Entrar no painel | qualquer usuário (gestor, corretor); administrador usa o `/admin/` |
 | `/painel/` | Home do painel (dados do usuário logado) | qualquer usuário logado |
 | `/painel/corretores/` | Lista os corretores da própria empresa, com ativar/desativar | gestor |
@@ -145,7 +150,14 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `GET /api/publico/cidades/<id>/imoveis/` | Busca na cidade, com filtros, ordenação e paginação (ver abaixo) | público — vitrine (site e app) |
 | `GET /api/publico/imoveis/<id>/` | Detalhe do imóvel: fotos, dados da natureza, endereço com coordenada e corretor | público — vitrine (site e app) |
 
-As telas do site público ainda não existem — a API acima é a base para elas e para o app.
+## Site público (W10)
+
+- Fica no app `site_publico` e não tem regra própria: o que é público, os filtros e a ordenação vêm de `imoveis/vitrine.py` (`buscar_na_vitrine`, `cidades_atendidas`), as mesmas funções usadas pela API.
+- Os templates recebem os dados já passados pelos serializers públicos da W09 — por isso o site mostra o mesmo que o app e não tem como exibir proprietário, código interno ou documento.
+- A cidade escolhida fica guardada na sessão (cookie, sem login) e aparece no topo de todas as páginas.
+- Mapa com Leaflet + OpenStreetMap (gratuito, sem chave de API).
+- WhatsApp: o botão chama o corretor responsável; se ele estiver desativado, chama a empresa dona do imóvel.
+- Perfis: a vitrine da empresa e a do corretor mostram os imóveis publicados de todas as cidades. Empresa inativa e corretor desativado (ou de empresa inativa) dão 404.
 
 ## Vitrine pública (API) — regras de negócio
 
