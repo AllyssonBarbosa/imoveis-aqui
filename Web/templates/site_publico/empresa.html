@@ -1,0 +1,46 @@
+{% extends "site_publico/base_site.html" %}
+{% load vitrine_site %}
+
+{% block titulo %}{{ empresa.razao_social_ou_nome }} — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+{# `empresa` vem do EmpresaPublicaSerializer — sem CNPJ/CPF nem endereço interno #}
+<section class="secao perfil">
+    {% if empresa.logomarca %}<img class="perfil-imagem" src="{{ empresa.logomarca }}" alt="Logomarca de {{ empresa.razao_social_ou_nome }}">{% endif %}
+    <div class="perfil-dados">
+        <span class="etiqueta">{{ empresa.tipo|rotulo:"tipo_empresa" }}</span>
+        <h1>{{ empresa.razao_social_ou_nome }}</h1>
+        {% if empresa.creci %}<p class="texto-suave">CRECI {{ empresa.creci }}</p>{% endif %}
+        {% if empresa.descricao %}<p>{{ empresa.descricao|linebreaksbr }}</p>{% endif %}
+        <p class="contatos">
+            {% if empresa.telefone %}<span>Telefone: {{ empresa.telefone }}</span>{% endif %}
+            {% if empresa.email %}<span>E-mail: <a href="mailto:{{ empresa.email }}">{{ empresa.email }}</a></span>{% endif %}
+        </p>
+        {% if empresa.cidades_atuacao %}
+        <ul class="lista-chips">
+            {% for c in empresa.cidades_atuacao %}<li>{{ c.nome }}/{{ c.uf }}</li>{% endfor %}
+        </ul>
+        {% endif %}
+        {% if whatsapp %}<p><a class="botao botao-whatsapp" href="{{ whatsapp }}" target="_blank" rel="noopener">Conversar pelo WhatsApp</a></p>{% endif %}
+    </div>
+</section>
+
+{% if empresa.corretores_ativos %}
+<section class="secao">
+    <h2>Corretores</h2>
+    <ul class="lista-pessoas">
+        {% for c in empresa.corretores_ativos %}
+        <li>
+            <a class="pessoa" href="{% url 'site_publico:corretor' c.id %}">
+                {% if c.foto %}<img class="avatar" src="{{ c.foto }}" alt="">{% endif %}
+                <span><strong>{{ c.nome }}</strong>{% if c.creci %}<br><span class="texto-suave">CRECI {{ c.creci }}</span>{% endif %}</span>
+            </a>
+        </li>
+        {% endfor %}
+    </ul>
+</section>
+{% endif %}
+
+<h2>Imóveis de {{ empresa.razao_social_ou_nome }}</h2>
+{% include "site_publico/_lista_imoveis.html" with texto_vazio="Esta empresa ainda não tem imóveis publicados." %}
+{% endblock %}
