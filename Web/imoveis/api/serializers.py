@@ -3,7 +3,9 @@ from django.db import transaction
 from rest_framework import serializers
 from rest_framework.settings import api_settings
 
+from contas.api.serializers import CorretorPublicoSerializer
 from core.models import Endereco
+from empresas.api.serializers import CidadeSerializer
 
 from ..models import Apartamento, Caracteristica, Casa, FotoImovel, Imovel, Predio, Terreno
 
@@ -224,3 +226,148 @@ class ImovelSerializer(serializers.ModelSerializer):
         if caracteristicas is not None:
             instance.caracteristicas.set(caracteristicas)
         return instance
+
+
+# --- Vitrine pública (W09) ---------------------------------------------------
+# Serializers só de leitura, com os campos do anúncio listados um a um.
+# Nada de proprietário, código interno, empresa ou status de publicação:
+# campo novo no model só aparece aqui se alguém o colocar de propósito.
+
+
+class EnderecoPublicoSerializer(serializers.ModelSerializer):
+    """Sem complemento (apto/bloco) — o resto é o que o mapa e o anúncio precisam."""
+
+    cidade = CidadeSerializer(read_only=True)
+
+    class Meta:
+        model = Endereco
+        fields = ["logradouro", "numero", "bairro", "cep", "cidade", "latitude", "longitude"]
+
+
+class FotoPublicaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FotoImovel
+        fields = ["imagem", "ordem", "capa"]
+
+
+class CasaPublicaSerializer(serializers.ModelSerializer):
+    area_livre = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = Casa
+        fields = [
+            "area_terreno", "area_construida", "area_livre", "quartos", "suites", "banheiros",
+            "salas", "vagas", "pavimentos", "ano_construcao", "piscina", "quintal",
+            "churrasqueira", "mobiliada",
+        ]
+
+
+class TerrenoPublicoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Terreno
+        fields = [
+            "area_total", "frente", "fundo", "lateral_esquerda", "lateral_direita",
+            "topografia", "murado", "esquina", "uso_permitido",
+        ]
+
+
+class PredioPublicoSerializer(serializers.ModelSerializer):
+    """O que o prédio mostra no anúncio — o endereço já sai no próprio imóvel."""
+
+    class Meta:
+        model = Predio
+        fields = [
+            "nome", "andares", "ano_construcao", "elevadores", "portaria_24h",
+            "piscina", "academia", "salao_de_festas", "playground",
+        ]
+
+
+class ApartamentoPublicoSerializer(serializers.ModelSerializer):
+    """Sem o número da unidade — o andar basta pro anúncio."""
+
+    predio = PredioPublicoSerializer(read_only=True)
+
+    class Meta:
+        model = Apartamento
+        fields = [
+            "predio", "andar", "area_privativa", "area_total", "quartos", "suites",
+            "banheiros", "vagas", "varanda", "posicao_solar",
+        ]
+
+
+SERIALIZER_PUBLICO_POR_NATUREZA = {
+    Imovel.Natureza.CASA: CasaPublicaSerializer,
+    Imovel.Natureza.TERRENO: TerrenoPublicoSerializer,
+    Imovel.Natureza.APARTAMENTO: ApartamentoPublicoSerializer,
+}
+
+
+class ImovelVitrineSerializer(serializers.ModelSerializer):
+    """Cartão do imóvel na busca — os números vêm das anotações de imoveis_da_vitrine()."""
+
+    bairro = serializers.CharField(source="bairro_anuncio", read_only=True)
+    area = serializers.DecimalField(
+        source="area_anuncio", max_digits=10, decimal_places=2, read_only=True
+    )
+    quartos = serializers.IntegerField(source="quartos_anuncio", read_only=True)
+    suites = serializers.IntegerField(source="suites_anuncio", read_only=True)
+    vagas = serializers.IntegerField(source="vagas_anuncio", read_only=True)
+    foto_capa = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Imovel
+        fields = [
+            "id", "titulo", "natureza", "finalidade", "preco_venda", "preco_aluguel",
+            "preco_condominio", "bairro", "area", "quartos", "suites", "vagas", "foto_capa",
+        ]
+
+    def get_foto_capa(self, imovel):
+        # as fotos já vêm do prefetch, ordenadas por ordem — sem capa marcada, vale a primeira
+        fotos = list(imovel.fotos.all())
+        if not fotos:
+            return None
+        foto = next((f for f in fotos if f.capa), fotos[0])
+        request = self.context.get("request")
+        return request.build_absolute_uri(foto.imagem.url) if request else foto.imagem.url
+
+
+class ImovelVitrineDetalheSerializer(serializers.ModelSerializer):
+    """Página do imóvel: fotos, dados da natureza, endereço com coordenada e corretor."""
+
+    caracteristicas = CaracteristicaSerializer(many=True, read_only=True)
+    # apartamento mostra o endereço do prédio
+    endereco = EnderecoPublicoSerializer(source="endereco_do_anuncio", read_only=True)
+    casa = serializers.SerializerMethodField()
+    terreno = serializers.SerializerMethodField()
+    apartamento = serializers.SerializerMethodField()
+    fotos = FotoPublicaSerializer(many=True, read_only=True)
+    corretor_responsavel = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Imovel
+        fields = [
+            "id", "titulo", "natureza", "finalidade", "preco_venda", "preco_aluguel",
+            "preco_condominio", "preco_iptu", "descricao", "caracteristicas", "casa",
+            "terreno", "apartamento", "endereco", "fotos", "corretor_responsavel",
+        ]
+
+    def _detalhes_se_for(self, imovel, natureza):
+        if imovel.natureza != natureza or imovel.detalhes is None:
+            return None
+        return SERIALIZER_PUBLICO_POR_NATUREZA[natureza](imovel.detalhes, context=self.context).data
+
+    def get_casa(self, imovel):
+        return self._detalhes_se_for(imovel, Imovel.Natureza.CASA)
+
+    def get_terreno(self, imovel):
+        return self._detalhes_se_for(imovel, Imovel.Natureza.TERRENO)
+
+    def get_apartamento(self, imovel):
+        return self._detalhes_se_for(imovel, Imovel.Natureza.APARTAMENTO)
+
+    def get_corretor_responsavel(self, imovel):
+        # corretor desativado não recebe contato (W02) — o imóvel continua, sem o contato dele
+        corretor = imovel.corretor_responsavel
+        if not corretor.is_active:
+            return None
+        return CorretorPublicoSerializer(corretor, context=self.context).data

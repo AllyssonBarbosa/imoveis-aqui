@@ -141,8 +141,30 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `GET /api/caracteristicas/` | Lista as características cadastradas pelo administrador | app, corretor |
 | `GET /api/publico/corretores/<id>/` | Perfil público do corretor (nome, CRECI, foto, telefone, WhatsApp, e-mail, apresentação) | público — vitrine (site e app) |
 | `GET /api/publico/empresas/<id>/` | Perfil público da empresa, com a lista de corretores ativos | público — vitrine (site e app) |
+| `GET /api/publico/cidades/` | Cidades atendidas (com UF) — só as que têm imóvel publicado | público — vitrine (site e app) |
+| `GET /api/publico/cidades/<id>/imoveis/` | Busca na cidade, com filtros, ordenação e paginação (ver abaixo) | público — vitrine (site e app) |
+| `GET /api/publico/imoveis/<id>/` | Detalhe do imóvel: fotos, dados da natureza, endereço com coordenada e corretor | público — vitrine (site e app) |
 
-O site público (vitrine com os imóveis publicados) ainda não existe — vem numa próxima história da E2. Por enquanto, "publicado" só muda o campo `publicado` do imóvel; nada consome esse dado publicamente ainda.
+As telas do site público ainda não existem — a API acima é a base para elas e para o app.
+
+## Vitrine pública (API) — regras de negócio
+
+- Não exige login nem token (e um token inválido enviado pelo app não atrapalha). Só leitura.
+- Mostra imóveis de todas as empresas, mas **só publicados e de empresa ativa** — rascunho e empresa inativa caem em 404.
+- Não devolve proprietário, documento, código interno, empresa, status de publicação, complemento do endereço nem dados internos do prédio. Os serializers públicos listam campo por campo; um teste confere que nada disso aparece.
+- Apartamento usa a cidade, o bairro e a coordenada do prédio.
+- Parâmetros da busca (`/cidades/<id>/imoveis/`):
+  - `busca` — texto livre no título, bairro e descrição
+  - `finalidade` (`VENDA`, `ALUGUEL`, `VENDA_E_ALUGUEL`) — "venda" também traz quem é "venda e aluguel", e o mesmo vale para "aluguel"
+  - `natureza` (`CASA`, `APARTAMENTO`, `TERRENO`)
+  - `preco_min` / `preco_max` — compara o preço da finalidade buscada; sem finalidade, o de venda (ou o aluguel, se não houver venda)
+  - `quartos`, `suites`, `vagas` — **mínimo** (pedir 2 quartos traz 3 também)
+  - `bairro` — exato, sem diferenciar maiúsculas
+  - `area_min` / `area_max` — área principal: construída (casa), privativa (apartamento), total (terreno)
+  - `caracteristicas=1,3` — o imóvel precisa ter **todas** as características escolhidas
+  - `ordenar` — `recentes` (padrão), `preco`, `-preco`, `area`, `-area`
+  - `page` — 20 imóveis por página
+- Corretor desativado não aparece no detalhe (`corretor_responsavel` vem `null`), mas o imóvel continua na vitrine.
 
 ## Painel do gestor — regras de negócio
 

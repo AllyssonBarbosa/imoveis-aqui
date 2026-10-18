@@ -13,6 +13,8 @@ urlpatterns = [
     path('api/', include('imoveis.api.urls')),
     path('api/publico/', include('contas.api.urls_publico')),
     path('api/publico/', include('empresas.api.urls_publico')),
+    path('api/publico/', include('localizacao.api.urls_publico')),
+    path('api/publico/', include('imoveis.api.urls_publico')),
 ]
 
 if settings.DEBUG:
