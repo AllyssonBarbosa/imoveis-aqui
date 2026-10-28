@@ -165,7 +165,11 @@ class DocumentoImovelForm(forms.ModelForm):
         input_formats=["%d/%m/%Y"],
         widget=forms.DateInput(
             format="%d/%m/%Y",
-            attrs={"placeholder": "dd/mm/aaaa", "inputmode": "numeric", "maxlength": "10"},
+            # data-mascara: static/js/mascaras.js aceita só números e põe as barras
+            attrs={
+                "placeholder": "dd/mm/aaaa", "inputmode": "numeric", "maxlength": "10",
+                "data-mascara": "data",
+            },
         ),
         error_messages={"invalid": "Informe a data no formato dd/mm/aaaa (ex.: 15/01/2026)."},
     )

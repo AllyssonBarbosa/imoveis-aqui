@@ -1646,6 +1646,9 @@ class PainelGestaoTests(MediaTemporariaMixin, TestCase):
         response = self.client.get(self.url("gestao_imovel_detail"))
         self.assertContains(response, 'placeholder="dd/mm/aaaa"')
         self.assertNotContains(response, 'type="date"')
+        # máscara que aceita só números e põe as barras (static/js/mascaras.js)
+        self.assertContains(response, 'data-mascara="data"')
+        self.assertContains(response, "js/mascaras.js")
 
     def test_data_fora_do_formato_dia_mes_ano_mostra_erro(self):
         response = self.client.post(
