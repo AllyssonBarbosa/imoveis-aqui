@@ -1621,7 +1621,7 @@ class PainelGestaoTests(MediaTemporariaMixin, TestCase):
         self.assertContains(response, "já está disponível")
 
     def test_anexa_documento_e_baixa(self):
-        response = self.client.post(self.url("gestao_documento_enviar"), dados_documento())
+        response = self.client.post(self.url("gestao_documento_enviar"), dados_documento(data_documento="15/01/2026"))
         self.assertRedirects(response, self.url("gestao_imovel_detail"))
         documento = self.imovel.documentos.get()
         self.assertEqual(documento.tipo, DocumentoImovel.Tipo.MATRICULA)
@@ -1634,10 +1634,33 @@ class PainelGestaoTests(MediaTemporariaMixin, TestCase):
 
     def test_documento_invalido_mostra_erro(self):
         falso = SimpleUploadedFile("x.pdf", b"nada", content_type="application/pdf")
-        response = self.client.post(self.url("gestao_documento_enviar"), dados_documento(arquivo=falso))
+        response = self.client.post(
+            self.url("gestao_documento_enviar"),
+            dados_documento(arquivo=falso, data_documento="15/01/2026"),
+        )
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Use PDF, JPG ou PNG")
         self.assertFalse(self.imovel.documentos.exists())
+
+    def test_campo_de_data_do_documento_e_dia_mes_ano(self):
+        response = self.client.get(self.url("gestao_imovel_detail"))
+        self.assertContains(response, 'placeholder="dd/mm/aaaa"')
+        self.assertNotContains(response, 'type="date"')
+
+    def test_data_fora_do_formato_dia_mes_ano_mostra_erro(self):
+        response = self.client.post(
+            self.url("gestao_documento_enviar"), dados_documento(data_documento="2026-01-15")
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Informe a data no formato dd/mm/aaaa")
+        self.assertFalse(self.imovel.documentos.exists())
+
+    def test_data_mes_dia_nao_e_aceita_como_dia_mes(self):
+        # 01/15/2026 (mm/dd) não existe em dd/mm: é recusado, não vira outra data
+        response = self.client.post(
+            self.url("gestao_documento_enviar"), dados_documento(data_documento="01/15/2026")
+        )
+        self.assertContains(response, "Informe a data no formato dd/mm/aaaa")
 
     def test_nao_baixa_documento_de_outra_empresa(self):
         outro_gestor = criar_gestor(self.de_fora.empresa, email="gestor-fora@teste.com")

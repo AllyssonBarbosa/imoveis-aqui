@@ -158,10 +158,21 @@ class SituacaoForm(forms.Form):
 
 
 class DocumentoImovelForm(forms.ModelForm):
+    # campo de texto em dd/mm/aaaa: o <input type="date"> segue o idioma do navegador
+    # (num Chrome em inglês aparece mm/dd/yyyy), então não dá pra garantir o formato com ele
+    data_documento = forms.DateField(
+        label="Data do documento",
+        input_formats=["%d/%m/%Y"],
+        widget=forms.DateInput(
+            format="%d/%m/%Y",
+            attrs={"placeholder": "dd/mm/aaaa", "inputmode": "numeric", "maxlength": "10"},
+        ),
+        error_messages={"invalid": "Informe a data no formato dd/mm/aaaa (ex.: 15/01/2026)."},
+    )
+
     class Meta:
         model = DocumentoImovel
         fields = ["tipo", "arquivo", "data_documento"]
-        widgets = {"data_documento": forms.DateInput(attrs={"type": "date"})}
 
 
 class FiltroImovelForm(forms.Form):
