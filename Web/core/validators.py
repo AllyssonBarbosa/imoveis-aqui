@@ -68,3 +68,33 @@ def validar_imagem(arquivo):
 
     if formato not in FORMATOS_DE_IMAGEM_PERMITIDOS:
         raise ValidationError("Formato de imagem não permitido. Use JPG, PNG ou WEBP.")
+
+
+TAMANHO_MAXIMO_DOCUMENTO_MB = 10
+
+
+def validar_documento(arquivo):
+    """Documento do imóvel: PDF, JPG ou PNG de até 10MB, conferido pelo conteúdo.
+
+    Assim como na imagem, não confia na extensão nem no content-type —
+    um PDF começa com "%PDF"; imagem é aberta pelo Pillow.
+    """
+    tamanho_maximo = TAMANHO_MAXIMO_DOCUMENTO_MB * 1024 * 1024
+    if arquivo.size > tamanho_maximo:
+        raise ValidationError(f"O documento não pode passar de {TAMANHO_MAXIMO_DOCUMENTO_MB}MB.")
+
+    posicao_original = arquivo.tell()
+    arquivo.seek(0)
+    try:
+        if arquivo.read(5) == b"%PDF-":
+            return
+        arquivo.seek(0)
+        try:
+            formato = Image.open(arquivo).format
+        except UnidentifiedImageError:
+            formato = None
+    finally:
+        arquivo.seek(posicao_original)
+
+    if formato not in {"JPEG", "PNG"}:
+        raise ValidationError("Formato de documento não permitido. Use PDF, JPG ou PNG.")

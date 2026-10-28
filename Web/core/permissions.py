@@ -31,3 +31,19 @@ class EhCorretor(BasePermission):
             and request.user.is_authenticated
             and request.user.perfil == Usuario.Perfil.CORRETOR
         )
+
+
+class EhGestor(BasePermission):
+    """Libera acesso só pro perfil gestor — corretor e administrador ficam de fora."""
+
+    message = "Este recurso é restrito ao gestor."
+
+    def has_permission(self, request, view):
+        from contas.models import Usuario
+
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and request.user.perfil == Usuario.Perfil.GESTOR
+            and request.user.empresa_id is not None
+        )

@@ -9,7 +9,9 @@ from ..models import (
     Apartamento,
     Caracteristica,
     Casa,
+    DocumentoImovel,
     FotoImovel,
+    HistoricoSituacao,
     Imovel,
     Lote,
     Loteamento,
@@ -284,15 +286,24 @@ class ImovelSerializer(serializers.ModelSerializer):
     lote = serializers.SerializerMethodField()
     fotos = FotoImovelSerializer(many=True, read_only=True)
     pode_publicar = serializers.BooleanField(read_only=True)
+    pendencias_para_publicar = serializers.ListField(
+        child=serializers.CharField(), read_only=True
+    )
+    situacao_desde = serializers.DateTimeField(read_only=True)
 
     class Meta:
         model = Imovel
         fields = [
             "id", "codigo", "titulo", "natureza", "corretor_responsavel", "proprietario", "finalidade",
             "preco_venda", "preco_aluguel", "preco_condominio", "preco_iptu", "descricao",
-            "caracteristicas", "casa", "terreno", "apartamento", "lote", "endereco", "fotos", "publicado", "pode_publicar", "criado_em",
+            "caracteristicas", "casa", "terreno", "apartamento", "lote", "endereco", "fotos",
+            "situacao", "situacao_desde", "publicado", "pode_publicar", "pendencias_para_publicar",
+            "criado_em",
         ]
-        read_only_fields = ["id", "publicado", "endereco", "fotos", "pode_publicar", "criado_em"]
+        # situação e publicação são do gestor (W08): aqui só leitura
+        read_only_fields = [
+            "id", "publicado", "situacao", "endereco", "fotos", "pode_publicar", "criado_em",
+        ]
 
     def _detalhes_se_for(self, imovel, natureza):
         if imovel.natureza != natureza or imovel.detalhes is None:
@@ -345,3 +356,70 @@ class ImovelSerializer(serializers.ModelSerializer):
         if caracteristicas is not None:
             instance.caracteristicas.set(caracteristicas)
         return instance
+
+
+class HistoricoSituacaoSerializer(serializers.ModelSerializer):
+    alterado_por = serializers.CharField(source="alterado_por.nome", read_only=True)
+
+    class Meta:
+        model = HistoricoSituacao
+        fields = [
+            "id", "situacao_anterior", "situacao_nova", "alterado_por", "alterado_em", "observacao",
+        ]
+
+
+class MudancaSituacaoSerializer(serializers.Serializer):
+    situacao = serializers.ChoiceField(choices=Imovel.Situacao.choices)
+    observacao = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class DocumentoImovelSerializer(serializers.ModelSerializer):
+    """Documento do imóvel. O arquivo não é exposto direto: sai pela ação `baixar`."""
+
+    enviado_por = serializers.CharField(source="enviado_por.nome", read_only=True)
+    arquivo = serializers.FileField(write_only=True)
+    url_download = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DocumentoImovel
+        fields = [
+            "id", "imovel", "tipo", "arquivo", "data_documento", "enviado_por", "enviado_em",
+            "url_download",
+        ]
+        read_only_fields = ["id", "enviado_por", "enviado_em"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get("request")
+        if request is not None and "imovel" in self.fields:
+            # imóvel de outra empresa cai em "não existe", sem revelar que existe
+            self.fields["imovel"].queryset = Imovel.objects.filter(empresa=request.user.empresa)
+
+    def get_url_download(self, documento):
+        from django.urls import reverse
+
+        url = reverse("gestao-documento-baixar", args=[documento.pk])
+        request = self.context.get("request")
+        return request.build_absolute_uri(url) if request else url
+
+    def validate(self, attrs):
+        instancia = DocumentoImovel(enviado_por=self.context["request"].user, **attrs)
+        try:
+            instancia.full_clean()
+        except DjangoValidationError as erro:
+            raise _erros_do_model(erro)
+        return attrs
+
+
+class VitrineImovelSerializer(ImovelSerializer):
+    """O que a vitrine pública mostra — sem proprietário, sem documentos, sem situação interna."""
+
+    caracteristicas = CaracteristicaSerializer(many=True, read_only=True)
+
+    class Meta(ImovelSerializer.Meta):
+        fields = [
+            "id", "codigo", "titulo", "natureza", "finalidade", "preco_venda", "preco_aluguel",
+            "preco_condominio", "preco_iptu", "descricao", "caracteristicas", "casa", "terreno",
+            "apartamento", "lote", "endereco", "fotos", "corretor_responsavel", "empresa",
+        ]
+        read_only_fields = fields

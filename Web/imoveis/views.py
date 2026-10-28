@@ -3,24 +3,28 @@ from functools import wraps
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.http import FileResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 from django.db import transaction
 from django.views.generic import CreateView, DetailView, ListView
 
 from contas.models import Usuario
-from contas.views import CorretorRequiredMixin
+from contas.views import CorretorRequiredMixin, GestorRequiredMixin
 from core.validators import validar_imagem
 
 from .forms import (
+    DocumentoImovelForm,
     EnderecoForm,
+    FiltroImovelForm,
     ImovelForm,
     LoteamentoForm,
     PredioForm,
     QuadraForm,
+    SituacaoForm,
     form_de_detalhes,
 )
-from .models import FotoImovel, Imovel, Loteamento, Predio, Quadra
+from .models import DocumentoImovel, FotoImovel, Imovel, Loteamento, Predio, Quadra
 
 
 def corretor_required(view_func):
@@ -34,12 +38,47 @@ def corretor_required(view_func):
     return wrapper
 
 
-class ImovelListView(CorretorRequiredMixin, ListView):
+def gestor_required(view_func):
+    @login_required
+    @wraps(view_func)
+    def wrapper(request, *args, **kwargs):
+        if request.user.perfil != Usuario.Perfil.GESTOR:
+            raise PermissionDenied
+        return view_func(request, *args, **kwargs)
+
+    return wrapper
+
+
+class FiltroImovelMixin:
+    """Lista de imóveis da empresa com o formulário de filtros (FiltroImovelForm)."""
+
+    campos_de_filtro = []
+
+    def get_filtro(self):
+        if not hasattr(self, "_filtro"):
+            self._filtro = FiltroImovelForm(
+                self.request.GET or None, empresa=self.request.user.empresa,
+                campos=self.campos_de_filtro,
+            )
+        return self._filtro
+
+    def filtrar(self, queryset):
+        return self.get_filtro().filtrar(queryset)
+
+    def get_context_data(self, **kwargs):
+        contexto = super().get_context_data(**kwargs)
+        contexto["filtro"] = self.get_filtro()
+        return contexto
+
+
+class ImovelListView(CorretorRequiredMixin, FiltroImovelMixin, ListView):
     template_name = "imoveis/imovel_list.html"
     context_object_name = "imoveis"
+    campos_de_filtro = ["busca", "natureza", "finalidade", "situacao", "vitrine"]
 
     def get_queryset(self):
-        return Imovel.objects.filter(empresa=self.request.user.empresa).prefetch_related("fotos")
+        queryset = Imovel.objects.filter(empresa=self.request.user.empresa).prefetch_related("fotos")
+        return self.filtrar(queryset)
 
 
 class ImovelCreateView(CorretorRequiredMixin, CreateView):
@@ -175,18 +214,6 @@ def imovel_excluir_foto(request, pk, foto_id):
     return redirect("imoveis:imovel_detail", pk=pk)
 
 
-@corretor_required
-@require_POST
-def imovel_publicar(request, pk):
-    imovel = get_object_or_404(Imovel, pk=pk, empresa=request.user.empresa)
-    try:
-        imovel.publicar()
-        messages.success(request, "Imóvel publicado.")
-    except ValidationError as erro:
-        messages.error(request, erro.messages[0])
-    return redirect("imoveis:imovel_detail", pk=pk)
-
-
 class PredioListView(CorretorRequiredMixin, ListView):
     template_name = "imoveis/predio_list.html"
     context_object_name = "predios"
@@ -301,9 +328,128 @@ def loteamento_detail(request, pk):
                 messages.success(request, f"Quadra {quadra.identificacao} cadastrada.")
                 return redirect("imoveis:loteamento_detail", pk=pk)
 
-    quadras = loteamento.quadras.prefetch_related("lotes__imovel")
+    quadras = loteamento.quadras.prefetch_related("lotes__imovel")  # vendido lê a situação do imóvel
     return render(request, "imoveis/loteamento_detail.html", {
         "loteamento": loteamento,
         "quadra_form": quadra_form,
         "quadras": [(quadra, quadra.resumo_lotes()) for quadra in quadras],
     })
+
+
+# ---------------------------------------------------------------- gestão (gestor, W08)
+# Documentos, situação e publicação são só do gestor. O corretor cadastra o
+# imóvel, mas quem decide o que vai pra vitrine é o gestor.
+
+
+class GestaoImovelListView(GestorRequiredMixin, FiltroImovelMixin, ListView):
+    template_name = "imoveis/gestao_list.html"
+    context_object_name = "imoveis"
+    campos_de_filtro = ["busca", "natureza", "corretor", "situacao", "vitrine"]
+
+    def get_queryset(self):
+        queryset = Imovel.objects.filter(empresa=self.request.user.empresa).select_related(
+            "corretor_responsavel"
+        )
+        return self.filtrar(queryset)
+
+
+def _imovel_da_empresa(request, pk):
+    return get_object_or_404(Imovel, pk=pk, empresa=request.user.empresa)
+
+
+def _tela_gestao(request, imovel, situacao_form=None, documento_form=None, status=200):
+    return render(request, "imoveis/gestao_detail.html", {
+        "imovel": imovel,
+        "pendencias": imovel.pendencias_para_publicar(),
+        "situacao_form": situacao_form or SituacaoForm(),
+        "documento_form": documento_form or DocumentoImovelForm(),
+        "historico": imovel.historico_situacao.select_related("alterado_por"),
+        "documentos": imovel.documentos.select_related("enviado_por"),
+    }, status=status)
+
+
+@gestor_required
+def gestao_imovel_detail(request, pk):
+    return _tela_gestao(request, _imovel_da_empresa(request, pk))
+
+
+@gestor_required
+@require_POST
+def gestao_imovel_publicar(request, pk):
+    imovel = _imovel_da_empresa(request, pk)
+    try:
+        imovel.publicar()
+    except ValidationError as erro:
+        messages.error(request, erro.messages[0])
+    else:
+        if imovel.situacao == Imovel.Situacao.DISPONIVEL:
+            messages.success(request, "Imóvel publicado — já aparece na vitrine.")
+        else:
+            messages.success(
+                request,
+                f"Imóvel publicado, mas só aparece na vitrine quando voltar a ficar disponível "
+                f"(hoje está {imovel.get_situacao_display().lower()}).",
+            )
+    return redirect("imoveis:gestao_imovel_detail", pk=pk)
+
+
+@gestor_required
+@require_POST
+def gestao_imovel_despublicar(request, pk):
+    imovel = _imovel_da_empresa(request, pk)
+    imovel.despublicar()
+    messages.success(request, "Imóvel tirado da vitrine.")
+    return redirect("imoveis:gestao_imovel_detail", pk=pk)
+
+
+@gestor_required
+@require_POST
+def gestao_imovel_situacao(request, pk):
+    imovel = _imovel_da_empresa(request, pk)
+    form = SituacaoForm(request.POST)
+    if form.is_valid():
+        try:
+            imovel.mudar_situacao(
+                form.cleaned_data["situacao"], request.user, form.cleaned_data["observacao"]
+            )
+        except ValidationError as erro:
+            form.add_error("situacao", erro.messages[0])
+        else:
+            messages.success(request, f"Situação alterada para {imovel.get_situacao_display().lower()}.")
+            return redirect("imoveis:gestao_imovel_detail", pk=pk)
+    messages.error(request, "Não deu pra mudar a situação: confira o formulário.")
+    return _tela_gestao(request, imovel, situacao_form=form)
+
+
+@gestor_required
+@require_POST
+def gestao_documento_enviar(request, pk):
+    imovel = _imovel_da_empresa(request, pk)
+    form = DocumentoImovelForm(request.POST, request.FILES)
+    form.instance.imovel = imovel
+    form.instance.enviado_por = request.user
+    if form.is_valid():
+        documento = form.save()
+        messages.success(request, f"{documento.get_tipo_display()} anexado.")
+        return redirect("imoveis:gestao_imovel_detail", pk=pk)
+    messages.error(request, "Não deu pra anexar o documento: confira os campos.")
+    return _tela_gestao(request, imovel, documento_form=form)
+
+
+@gestor_required
+def gestao_documento_baixar(request, pk, documento_id):
+    # o arquivo só sai por aqui, depois de conferir que o imóvel é da empresa do gestor
+    imovel = _imovel_da_empresa(request, pk)
+    documento = get_object_or_404(DocumentoImovel, pk=documento_id, imovel=imovel)
+    return FileResponse(documento.arquivo.open("rb"), as_attachment=True)
+
+
+@gestor_required
+@require_POST
+def gestao_documento_excluir(request, pk, documento_id):
+    imovel = _imovel_da_empresa(request, pk)
+    documento = get_object_or_404(DocumentoImovel, pk=documento_id, imovel=imovel)
+    documento.arquivo.delete(save=False)
+    documento.delete()
+    messages.success(request, "Documento removido.")
+    return redirect("imoveis:gestao_imovel_detail", pk=pk)

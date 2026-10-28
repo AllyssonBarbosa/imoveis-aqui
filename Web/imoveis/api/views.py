@@ -1,23 +1,42 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.http import FileResponse
 from django.shortcuts import get_object_or_404
-from rest_framework import status, viewsets
+from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from core.mixins import EmpresaScopedQuerySetMixin
-from core.permissions import EhCorretor
+from core.permissions import EhCorretor, EhGestor
 
-from ..models import Caracteristica, FotoImovel, Imovel, Loteamento, Predio, Quadra
+from ..models import (
+    Caracteristica,
+    DocumentoImovel,
+    FotoImovel,
+    Imovel,
+    Loteamento,
+    Predio,
+    Quadra,
+)
 from .serializers import (
     SERIALIZER_POR_NATUREZA,
     CaracteristicaSerializer,
+    DocumentoImovelSerializer,
     EnderecoSerializer,
     FotoImovelSerializer,
+    HistoricoSituacaoSerializer,
     ImovelSerializer,
     LoteamentoSerializer,
+    MudancaSituacaoSerializer,
     PredioSerializer,
     QuadraSerializer,
+    VitrineImovelSerializer,
 )
+
+IMOVEL_COM_DETALHES = Imovel.objects.select_related(
+    "endereco", "casa", "terreno", "apartamento__predio__endereco", "lote__quadra__loteamento",
+).prefetch_related("fotos")
 
 
 class CaracteristicaViewSet(viewsets.ReadOnlyModelViewSet):
@@ -31,10 +50,7 @@ class CaracteristicaViewSet(viewsets.ReadOnlyModelViewSet):
 class ImovelViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
     serializer_class = ImovelSerializer
     permission_classes = [EhCorretor]
-    queryset = Imovel.objects.select_related(
-        "endereco", "casa", "terreno", "apartamento__predio__endereco",
-        "lote__quadra__loteamento",
-    )
+    queryset = IMOVEL_COM_DETALHES
 
     @action(detail=True, methods=["get", "put"])
     def endereco(self, request, pk=None):
@@ -77,14 +93,7 @@ class ImovelViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
         serializer.save()
         return Response(serializer.data)
 
-    @action(detail=True, methods=["post"])
-    def publicar(self, request, pk=None):
-        imovel = self.get_object()
-        try:
-            imovel.publicar()
-        except DjangoValidationError as erro:
-            return Response({"detail": erro.messages[0]}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(self.get_serializer(imovel).data)
+    # publicar saiu daqui na W08: publicação e situação são do gestor (GestaoImovelViewSet)
 
 
 class PredioViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
@@ -112,7 +121,7 @@ class LoteamentoViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
 
     serializer_class = LoteamentoSerializer
     permission_classes = [EhCorretor]
-    queryset = Loteamento.objects.prefetch_related("quadras__lotes")
+    queryset = Loteamento.objects.prefetch_related("quadras__lotes__imovel")
 
     def destroy(self, request, *args, **kwargs):
         loteamento = self.get_object()
@@ -129,7 +138,7 @@ class QuadraViewSet(viewsets.ModelViewSet):
 
     serializer_class = QuadraSerializer
     permission_classes = [EhCorretor]
-    queryset = Quadra.objects.prefetch_related("lotes")
+    queryset = Quadra.objects.prefetch_related("lotes__imovel")
 
     def get_queryset(self):
         queryset = super().get_queryset().filter(loteamento__empresa=self.request.user.empresa)
@@ -189,3 +198,100 @@ class FotoImovelViewSet(viewsets.ModelViewSet):
         foto = self.get_object()
         foto.definir_como_capa()
         return Response(self.get_serializer(foto).data)
+
+
+class GestaoImovelViewSet(EmpresaScopedQuerySetMixin, viewsets.ReadOnlyModelViewSet):
+    """Visão do gestor sobre os imóveis da empresa: publicação, situação e histórico (W08)."""
+
+    serializer_class = ImovelSerializer
+    permission_classes = [EhGestor]
+    queryset = IMOVEL_COM_DETALHES
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        situacao = self.request.query_params.get("situacao")
+        if situacao:
+            queryset = queryset.filter(situacao=situacao)
+        return queryset
+
+    @action(detail=True, methods=["post"])
+    def publicar(self, request, pk=None):
+        imovel = self.get_object()
+        try:
+            imovel.publicar()
+        except DjangoValidationError as erro:
+            return Response(
+                {"detail": erro.messages[0], "pendencias": imovel.pendencias_para_publicar()},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(self.get_serializer(imovel).data)
+
+    @action(detail=True, methods=["post"])
+    def despublicar(self, request, pk=None):
+        imovel = self.get_object()
+        imovel.despublicar()
+        return Response(self.get_serializer(imovel).data)
+
+    @action(detail=True, methods=["post"], serializer_class=MudancaSituacaoSerializer)
+    def situacao(self, request, pk=None):
+        imovel = self.get_object()
+        entrada = MudancaSituacaoSerializer(data=request.data)
+        entrada.is_valid(raise_exception=True)
+        try:
+            imovel.mudar_situacao(
+                entrada.validated_data["situacao"], request.user,
+                entrada.validated_data["observacao"],
+            )
+        except DjangoValidationError as erro:
+            return Response({"situacao": erro.messages}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(ImovelSerializer(imovel, context=self.get_serializer_context()).data)
+
+    @action(detail=True, methods=["get"])
+    def historico(self, request, pk=None):
+        imovel = self.get_object()
+        mudancas = imovel.historico_situacao.select_related("alterado_por")
+        return Response(HistoricoSituacaoSerializer(mudancas, many=True).data)
+
+
+class DocumentoImovelViewSet(
+    mixins.CreateModelMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin,
+    mixins.DestroyModelMixin, viewsets.GenericViewSet,
+):
+    """Documentos do imóvel, só do gestor — filtrados por ?imovel=<id> (W08)."""
+
+    serializer_class = DocumentoImovelSerializer
+    permission_classes = [EhGestor]
+    parser_classes = [MultiPartParser, FormParser]
+    queryset = DocumentoImovel.objects.select_related("enviado_por")
+
+    def get_queryset(self):
+        queryset = super().get_queryset().filter(imovel__empresa=self.request.user.empresa)
+        imovel_id = self.request.query_params.get("imovel")
+        if imovel_id:
+            queryset = queryset.filter(imovel_id=imovel_id)
+        return queryset
+
+    def perform_create(self, serializer):
+        serializer.save(enviado_por=self.request.user)
+
+    def perform_destroy(self, documento):
+        documento.arquivo.delete(save=False)
+        documento.delete()
+
+    @action(detail=True, methods=["get"])
+    def baixar(self, request, pk=None):
+        documento = self.get_object()  # já filtrado pela empresa
+        return FileResponse(documento.arquivo.open("rb"), as_attachment=True)
+
+
+class VitrineImovelViewSet(viewsets.ReadOnlyModelViewSet):
+    """Vitrine pública, sem login: só imóvel disponível E publicado (W08).
+
+    Lista imóveis de todas as empresas ativas — é a única consulta de acervo
+    que não filtra pela empresa do usuário, porque não há usuário: é o público.
+    """
+
+    serializer_class = VitrineImovelSerializer
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    queryset = IMOVEL_COM_DETALHES.prefetch_related("caracteristicas").na_vitrine()

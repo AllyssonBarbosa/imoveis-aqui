@@ -8,6 +8,8 @@
     <a class="botao" href="{% url 'imoveis:imovel_create' %}">+ Novo imóvel</a>
 </div>
 
+{% include "imoveis/_filtros_imoveis.html" %}
+
 {% if imoveis %}
 <table>
     <thead>
@@ -18,6 +20,7 @@
             <th>Natureza</th>
             <th>Finalidade</th>
             <th>Situação</th>
+            <th>Vitrine</th>
         </tr>
     </thead>
     <tbody>
@@ -33,11 +36,14 @@
             <td>{{ imovel.titulo }}</td>
             <td>{{ imovel.get_natureza_display }}</td>
             <td>{{ imovel.get_finalidade_display }}</td>
+            <td>{{ imovel.get_situacao_display }}</td>
             <td>
-                {% if imovel.publicado %}
-                    <span class="situacao ativo">Publicado</span>
+                {% if imovel.publicado and imovel.situacao == "DISPONIVEL" %}
+                    <span class="situacao ativo">Na vitrine</span>
+                {% elif imovel.publicado %}
+                    <span class="situacao inativo">Publicado, mas {{ imovel.get_situacao_display|lower }}</span>
                 {% else %}
-                    <span class="situacao inativo">Rascunho</span>
+                    <span class="situacao inativo">Não publicado</span>
                 {% endif %}
             </td>
         </tr>
@@ -46,6 +52,10 @@
     </tbody>
 </table>
 {% else %}
+{% if filtro.tem_filtro %}
+<p class="area-vazia">Nenhum imóvel com esses filtros.</p>
+{% else %}
 <p class="area-vazia">Nenhum imóvel cadastrado ainda — comece pelo botão acima.</p>
+{% endif %}
 {% endif %}
 {% endblock %}

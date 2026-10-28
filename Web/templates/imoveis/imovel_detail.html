@@ -15,15 +15,11 @@
     {% if imovel.publicado %}
         <span class="situacao ativo">Publicado</span>
     {% else %}
-        <span class="situacao inativo">Rascunho</span>
+        <span class="situacao inativo">Fora da vitrine</span>
     {% endif %}
-    <form method="post" action="{% url 'imoveis:imovel_publicar' imovel.pk %}" style="margin-left:auto;">
-        {% csrf_token %}
-        <button type="submit" {% if imovel.publicado %}disabled{% endif %}>
-            {% if imovel.publicado %}Publicado{% else %}Publicar{% endif %}
-        </button>
-    </form>
+    <span class="situacao">{{ imovel.get_situacao_display }}</span>
 </div>
+<p class="helptext">Publicação, situação e documentos são controlados pelo gestor.</p>
 
 <div class="secao">
     <h2>Dados</h2>

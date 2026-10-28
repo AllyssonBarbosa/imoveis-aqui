@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+
+{% block titulo %}{{ imovel.codigo }} — gestão — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+{% if messages %}
+    <ul class="mensagens">
+        {% for mensagem in messages %}<li>{{ mensagem }}</li>{% endfor %}
+    </ul>
+{% endif %}
+
+<div class="cabecalho-imovel">
+    <span class="codigo">{{ imovel.codigo }}</span>
+    <h1>{{ imovel.titulo }}</h1>
+    <span class="situacao">{{ imovel.get_situacao_display }}</span>
+    {% if imovel.publicado and imovel.situacao == "DISPONIVEL" %}
+        <span class="situacao ativo">Na vitrine</span>
+    {% else %}
+        <span class="situacao inativo">Fora da vitrine</span>
+    {% endif %}
+</div>
+<p>
+    {{ imovel.get_natureza_display }} · {{ imovel.get_finalidade_display }} ·
+    corretor {{ imovel.corretor_responsavel.nome }} ·
+    <a href="{% url 'imoveis:gestao_imovel_list' %}">voltar para a lista</a>
+</p>
+
+<div class="secao">
+    <h2>Publicação</h2>
+    {% if imovel.publicado %}
+        <p>
+            O imóvel está <strong>publicado</strong>.
+            {% if imovel.situacao != "DISPONIVEL" %}
+                Mesmo assim, ele não aparece na vitrine enquanto estiver {{ imovel.get_situacao_display|lower }}.
+            {% endif %}
+        </p>
+        <form method="post" action="{% url 'imoveis:gestao_imovel_despublicar' imovel.pk %}">
+            {% csrf_token %}
+            <button type="submit" class="secundario">Tirar da vitrine</button>
+        </form>
+    {% else %}
+        <p>O imóvel está <strong>fora da vitrine</strong>.</p>
+        {% if pendencias %}
+        <p class="helptext">Para publicar, falta: {{ pendencias|join:", " }}.</p>
+        {% endif %}
+        <form method="post" action="{% url 'imoveis:gestao_imovel_publicar' imovel.pk %}">
+            {% csrf_token %}
+            <button type="submit">Publicar</button>
+        </form>
+    {% endif %}
+</div>
+
+<div class="secao">
+    <h2>Situação</h2>
+    <p>
+        <strong>{{ imovel.get_situacao_display }}</strong> desde {{ imovel.situacao_desde|date:"d/m/Y H:i" }}.
+    </p>
+
+    <form method="post" action="{% url 'imoveis:gestao_imovel_situacao' imovel.pk %}">
+        {% csrf_token %}
+        {{ situacao_form.non_field_errors }}
+        <div class="grade-formulario">
+            {% for field in situacao_form %}
+            <p>
+                {{ field.label_tag }}
+                {{ field }}
+                {% if field.help_text %}<span class="helptext">{{ field.help_text }}</span>{% endif %}
+                {{ field.errors }}
+            </p>
+            {% endfor %}
+        </div>
+        <button type="submit">Mudar situação</button>
+    </form>
+
+    <h3>Histórico</h3>
+    {% if historico %}
+    <table>
+        <thead>
+            <tr><th>Quando</th><th>Quem</th><th>De</th><th>Para</th><th>Observação</th></tr>
+        </thead>
+        <tbody>
+            {% for mudanca in historico %}
+            <tr>
+                <td>{{ mudanca.alterado_em|date:"d/m/Y H:i" }}</td>
+                <td>{{ mudanca.alterado_por.nome }}</td>
+                <td>{{ mudanca.get_situacao_anterior_display }}</td>
+                <td>{{ mudanca.get_situacao_nova_display }}</td>
+                <td>{{ mudanca.observacao|default:"—" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="area-vazia">Nenhuma mudança ainda — disponível desde o cadastro.</p>
+    {% endif %}
+</div>
+
+<div class="secao">
+    <h2>Documentos</h2>
+
+    {% if documentos %}
+    <table>
+        <thead>
+            <tr><th>Tipo</th><th>Data do documento</th><th>Enviado por</th><th>Enviado em</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for documento in documentos %}
+            <tr>
+                <td>
+                    <a href="{% url 'imoveis:gestao_documento_baixar' imovel.pk documento.pk %}">{{ documento.get_tipo_display }}</a>
+                </td>
+                <td>{{ documento.data_documento|date:"d/m/Y" }}</td>
+                <td>{{ documento.enviado_por.nome }}</td>
+                <td>{{ documento.enviado_em|date:"d/m/Y H:i" }}</td>
+                <td>
+                    <form method="post" action="{% url 'imoveis:gestao_documento_excluir' imovel.pk documento.pk %}">
+                        {% csrf_token %}
+                        <button type="submit" class="perigo">Excluir</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="area-vazia">Nenhum documento anexado ainda.</p>
+    {% endif %}
+
+    <form method="post" action="{% url 'imoveis:gestao_documento_enviar' imovel.pk %}" enctype="multipart/form-data">
+        {% csrf_token %}
+        {{ documento_form.non_field_errors }}
+        <div class="grade-formulario">
+            {% for field in documento_form %}
+            <p>
+                {{ field.label_tag }}
+                {{ field }}
+                {{ field.errors }}
+            </p>
+            {% endfor %}
+        </div>
+        <span class="helptext">PDF, JPG ou PNG, até 10MB. Documentos nunca aparecem na vitrine.</span>
+        <button type="submit">Anexar documento</button>
+    </form>
+</div>
+{% endblock %}
