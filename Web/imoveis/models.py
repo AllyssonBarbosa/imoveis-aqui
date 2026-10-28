@@ -44,6 +44,7 @@ class Imovel(EmpresaOwnedModel):
         CASA = "CASA", "Casa"
         TERRENO = "TERRENO", "Terreno"
         APARTAMENTO = "APARTAMENTO", "Apartamento"
+        LOTE = "LOTE", "Lote"
 
     codigo = models.CharField(max_length=30)
     titulo = models.CharField(max_length=200)
@@ -114,11 +115,12 @@ class Imovel(EmpresaOwnedModel):
 
     @property
     def detalhes(self):
-        """Dados próprios da natureza (Casa, Terreno ou Apartamento) — None enquanto não preenchidos."""
+        """Dados próprios da natureza (casa, terreno, apartamento ou lote) — None enquanto não preenchidos."""
         relacao = {
             self.Natureza.CASA: "casa",
             self.Natureza.TERRENO: "terreno",
             self.Natureza.APARTAMENTO: "apartamento",
+            self.Natureza.LOTE: "lote",
         }.get(self.natureza)
         if relacao is None:
             return None
@@ -434,3 +436,137 @@ class Apartamento(models.Model):
 
         if self.suites is not None and self.quartos is not None and self.suites > self.quartos:
             raise ValidationError({"suites": "O número de suítes não pode passar o de quartos."})
+
+
+class Loteamento(EmpresaOwnedModel):
+    """Loteamento: cadastrado uma vez, com a infraestrutura que vale pra todos os lotes (W07).
+
+    Três níveis: Loteamento → Quadra → Lote. O lote é o imóvel anunciado;
+    infraestrutura e lazer ficam só aqui e o anúncio do lote lê daqui.
+    """
+
+    nome = models.CharField(max_length=150)
+    cidade = models.ForeignKey(
+        "localizacao.Cidade", on_delete=models.PROTECT, related_name="loteamentos"
+    )
+    incorporadora = models.CharField(max_length=150)
+    asfalto = models.BooleanField(default=False)
+    agua = models.BooleanField("água", default=False)
+    energia = models.BooleanField(default=False)
+    esgoto = models.BooleanField(default=False)
+    iluminacao = models.BooleanField("iluminação pública", default=False)
+    areas_de_lazer = models.TextField(
+        "áreas de lazer", blank=True, help_text="Ex.: praça, quadra poliesportiva, pista de caminhada."
+    )
+
+    class Meta:
+        verbose_name = "loteamento"
+        verbose_name_plural = "loteamentos"
+        ordering = ["nome"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["empresa", "nome"],
+                name="loteamento_nome_unico_por_empresa",
+                violation_error_message="Já existe um loteamento com esse nome nesta empresa.",
+            )
+        ]
+
+    def __str__(self):
+        return self.nome
+
+
+class Quadra(models.Model):
+    """Quadra do loteamento, identificada por letra ou número ("A", "B", "12")."""
+
+    loteamento = models.ForeignKey(Loteamento, on_delete=models.CASCADE, related_name="quadras")
+    identificacao = models.CharField("identificação", max_length=20)
+
+    class Meta:
+        verbose_name = "quadra"
+        verbose_name_plural = "quadras"
+        ordering = ["loteamento", "identificacao"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["loteamento", "identificacao"],
+                name="quadra_unica_por_loteamento",
+                violation_error_message="Já existe uma quadra com essa identificação neste loteamento.",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.loteamento} — Quadra {self.identificacao}"
+
+    def resumo_lotes(self):
+        """Quantos lotes a quadra tem, quantos estão disponíveis e quantos foram vendidos."""
+        total = self.lotes.count()
+        vendidos = sum(1 for lote in self.lotes.all() if lote.vendido)
+        return {"total": total, "disponiveis": total - vendidos, "vendidos": vendidos}
+
+
+class Lote(models.Model):
+    """O lote é o imóvel anunciado; quadra e loteamento vêm pela ligação (W07).
+
+    O preço é o preço de venda do Imovel — não se repete aqui.
+    """
+
+    imovel = models.OneToOneField(Imovel, on_delete=models.CASCADE, related_name="lote")
+    quadra = models.ForeignKey(Quadra, on_delete=models.PROTECT, related_name="lotes")
+    numero = models.CharField("número", max_length=10)
+    area = models.DecimalField("área (m²)", max_digits=10, decimal_places=2, validators=_area_positiva())
+    frente = models.DecimalField("frente (m)", max_digits=8, decimal_places=2, validators=_medida_positiva())
+    fundo = models.DecimalField("fundo (m)", max_digits=8, decimal_places=2, validators=_medida_positiva())
+    entrada_minima = models.DecimalField(
+        "entrada mínima", max_digits=12, decimal_places=2, null=True, blank=True,
+        validators=[MinValueValidator(0)],
+    )
+    parcelas_maximas = models.PositiveSmallIntegerField(
+        "número máximo de parcelas", null=True, blank=True, validators=[MinValueValidator(1)]
+    )
+    condicoes_parcelamento = models.TextField(
+        "outras condições de parcelamento", blank=True, help_text="Ex.: correção anual pelo IPCA."
+    )
+
+    class Meta:
+        verbose_name = "lote"
+        verbose_name_plural = "lotes"
+        ordering = ["quadra", "numero"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["quadra", "numero"],
+                name="lote_numero_unico_por_quadra",
+                violation_error_message="Já existe um lote com esse número nesta quadra.",
+            )
+        ]
+
+    def __str__(self):
+        return f"Lote {self.numero} — {self.quadra}"
+
+    @property
+    def vendido(self):
+        # Ainda não existe venda no sistema: quem vai marcar o lote como vendido
+        # é a tarefa de contratos. Até lá, todo lote conta como disponível.
+        return False
+
+    def clean(self):
+        super().clean()
+
+        if self.imovel_id and self.imovel.natureza != Imovel.Natureza.LOTE:
+            raise ValidationError("Este imóvel não é um lote.")
+
+        if self.quadra_id and self.imovel_id:
+            if self.quadra.loteamento.empresa_id != self.imovel.empresa_id:
+                raise ValidationError({"quadra": "A quadra precisa ser de um loteamento da mesma empresa."})
+
+        if self.entrada_minima is not None and self.imovel_id:
+            preco = self.imovel.preco_venda
+            if not preco:
+                raise ValidationError({
+                    "entrada_minima": "Parcelamento só vale para lote à venda — informe o preço de venda no imóvel."
+                })
+            if self.entrada_minima > preco:
+                raise ValidationError({
+                    "entrada_minima": (
+                        f"A entrada mínima (R$ {self.entrada_minima}) não pode passar "
+                        f"o preço do lote (R$ {preco})."
+                    )
+                })

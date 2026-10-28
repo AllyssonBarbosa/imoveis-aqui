@@ -2,7 +2,7 @@ from django import forms
 
 from core.models import Endereco
 
-from .models import Apartamento, Casa, Imovel, Predio, Terreno
+from .models import Apartamento, Casa, Imovel, Lote, Loteamento, Predio, Quadra, Terreno
 
 
 class ImovelForm(forms.ModelForm):
@@ -85,19 +85,54 @@ class PredioForm(forms.ModelForm):
         ]
 
 
+class LoteForm(forms.ModelForm):
+    # o preço é o preço de venda do imóvel; infraestrutura e lazer vêm do loteamento
+    class Meta:
+        model = Lote
+        fields = [
+            "quadra", "numero", "area", "frente", "fundo", "entrada_minima",
+            "parcelas_maximas", "condicoes_parcelamento",
+        ]
+        widgets = {"condicoes_parcelamento": forms.Textarea(attrs={"rows": 2})}
+
+    def __init__(self, *args, empresa=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if empresa is not None:
+            self.fields["quadra"].queryset = Quadra.objects.filter(
+                loteamento__empresa=empresa
+            ).select_related("loteamento")
+
+
+class LoteamentoForm(forms.ModelForm):
+    class Meta:
+        model = Loteamento
+        fields = [
+            "nome", "cidade", "incorporadora", "asfalto", "agua", "energia", "esgoto",
+            "iluminacao", "areas_de_lazer",
+        ]
+        widgets = {"areas_de_lazer": forms.Textarea(attrs={"rows": 3})}
+
+
+class QuadraForm(forms.ModelForm):
+    class Meta:
+        model = Quadra
+        fields = ["identificacao"]
+
+
 FORM_POR_NATUREZA = {
     Imovel.Natureza.CASA: (CasaForm, Casa),
     Imovel.Natureza.TERRENO: (TerrenoForm, Terreno),
     Imovel.Natureza.APARTAMENTO: (ApartamentoForm, Apartamento),
+    Imovel.Natureza.LOTE: (LoteForm, Lote),
 }
 
 
 def form_de_detalhes(imovel, data=None):
-    """Formulário só com os campos da natureza do imóvel (casa, terreno ou apartamento)."""
+    """Formulário só com os campos da natureza do imóvel (casa, terreno, apartamento ou lote)."""
     form_class, model = FORM_POR_NATUREZA[imovel.natureza]
     # imovel_id, e não imovel=: atribuir o objeto guardaria a instância vazia no cache
     # de imovel.casa/terreno/apartamento, e a tela acharia que os dados já existem
     instancia = imovel.detalhes or model(imovel_id=imovel.pk)
-    if form_class is ApartamentoForm:
+    if form_class in (ApartamentoForm, LoteForm):
         return form_class(data, instance=instancia, empresa=imovel.empresa)
     return form_class(data, instance=instancia)

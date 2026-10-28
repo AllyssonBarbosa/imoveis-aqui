@@ -7,14 +7,16 @@ from rest_framework.response import Response
 from core.mixins import EmpresaScopedQuerySetMixin
 from core.permissions import EhCorretor
 
-from ..models import Caracteristica, FotoImovel, Imovel, Predio
+from ..models import Caracteristica, FotoImovel, Imovel, Loteamento, Predio, Quadra
 from .serializers import (
     SERIALIZER_POR_NATUREZA,
     CaracteristicaSerializer,
     EnderecoSerializer,
     FotoImovelSerializer,
     ImovelSerializer,
+    LoteamentoSerializer,
     PredioSerializer,
+    QuadraSerializer,
 )
 
 
@@ -30,7 +32,8 @@ class ImovelViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
     serializer_class = ImovelSerializer
     permission_classes = [EhCorretor]
     queryset = Imovel.objects.select_related(
-        "endereco", "casa", "terreno", "apartamento__predio__endereco"
+        "endereco", "casa", "terreno", "apartamento__predio__endereco",
+        "lote__quadra__loteamento",
     )
 
     @action(detail=True, methods=["get", "put"])
@@ -102,6 +105,47 @@ class PredioViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
         predio.delete()
         endereco.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class LoteamentoViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
+    """Loteamentos da própria empresa, com o resumo de lotes por quadra."""
+
+    serializer_class = LoteamentoSerializer
+    permission_classes = [EhCorretor]
+    queryset = Loteamento.objects.prefetch_related("quadras__lotes")
+
+    def destroy(self, request, *args, **kwargs):
+        loteamento = self.get_object()
+        if Quadra.objects.filter(loteamento=loteamento, lotes__isnull=False).exists():
+            return Response(
+                {"detail": "Este loteamento tem lotes cadastrados e não pode ser excluído."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+
+class QuadraViewSet(viewsets.ModelViewSet):
+    """Quadras — filtradas por ?loteamento=<id>. Isoladas pela empresa do loteamento."""
+
+    serializer_class = QuadraSerializer
+    permission_classes = [EhCorretor]
+    queryset = Quadra.objects.prefetch_related("lotes")
+
+    def get_queryset(self):
+        queryset = super().get_queryset().filter(loteamento__empresa=self.request.user.empresa)
+        loteamento_id = self.request.query_params.get("loteamento")
+        if loteamento_id:
+            queryset = queryset.filter(loteamento_id=loteamento_id)
+        return queryset
+
+    def destroy(self, request, *args, **kwargs):
+        quadra = self.get_object()
+        if quadra.lotes.exists():
+            return Response(
+                {"detail": "Esta quadra tem lotes cadastrados e não pode ser excluída."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
 
 
 class FotoImovelViewSet(viewsets.ModelViewSet):

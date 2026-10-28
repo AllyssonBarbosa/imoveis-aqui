@@ -59,7 +59,7 @@
 </div>
 
 <div class="secao">
-    <h2>Dados {% if imovel.natureza == "TERRENO" %}do terreno{% elif imovel.natureza == "APARTAMENTO" %}do apartamento{% else %}da casa{% endif %}</h2>
+    <h2>Dados {% if imovel.natureza == "TERRENO" %}do terreno{% elif imovel.natureza == "APARTAMENTO" %}do apartamento{% elif imovel.natureza == "LOTE" %}do lote{% else %}da casa{% endif %}</h2>
 
     {% with d=imovel.detalhes %}
     {% if d and imovel.natureza == "CASA" %}
@@ -109,6 +109,34 @@
         {% if p.playground %}<li>Playground</li>{% endif %}
     </ul>
     {% endwith %}
+    {% elif d and imovel.natureza == "LOTE" %}
+    <div class="linha-valores">
+        <div class="valor-item"><span class="rotulo">Lote</span><span class="valor">{{ d.numero }} · Quadra {{ d.quadra.identificacao }}</span></div>
+        <div class="valor-item"><span class="rotulo">Área</span><span class="valor">{{ d.area }} m²</span></div>
+        {% if imovel.preco_venda %}<div class="valor-item"><span class="rotulo">Preço</span><span class="valor">R$ {{ imovel.preco_venda }}</span></div>{% endif %}
+    </div>
+    <p>Frente {{ d.frente }} m · fundo {{ d.fundo }} m</p>
+    {% if d.entrada_minima or d.parcelas_maximas or d.condicoes_parcelamento %}
+    <p>
+        <strong>Parcelamento:</strong>
+        {% if d.entrada_minima %}entrada mínima de R$ {{ d.entrada_minima }}{% endif %}
+        {% if d.parcelas_maximas %}{% if d.entrada_minima %} + {% endif %}até {{ d.parcelas_maximas }}x{% endif %}
+        {% if d.condicoes_parcelamento %}· {{ d.condicoes_parcelamento }}{% endif %}
+    </p>
+    {% endif %}
+
+    {% with l=d.quadra.loteamento %}
+    <h3>Loteamento: <a href="{% url 'imoveis:loteamento_detail' l.pk %}">{{ l.nome }}</a></h3>
+    <p>{{ l.cidade }} · incorporadora {{ l.incorporadora }}</p>
+    <ul class="lista-chips">
+        {% if l.asfalto %}<li>Asfalto</li>{% endif %}
+        {% if l.agua %}<li>Água</li>{% endif %}
+        {% if l.energia %}<li>Energia</li>{% endif %}
+        {% if l.esgoto %}<li>Esgoto</li>{% endif %}
+        {% if l.iluminacao %}<li>Iluminação pública</li>{% endif %}
+    </ul>
+    {% if l.areas_de_lazer %}<p><strong>Áreas de lazer:</strong> {{ l.areas_de_lazer }}</p>{% endif %}
+    {% endwith %}
     {% elif d %}
     <div class="linha-valores">
         <div class="valor-item"><span class="rotulo">Área total</span><span class="valor">{{ d.area_total }} m²</span></div>
@@ -145,6 +173,11 @@
         <span class="helptext">
             Endereço, lazer e portaria vêm do prédio escolhido.
             Não achou o prédio? <a href="{% url 'imoveis:predio_create' %}">Cadastre-o primeiro</a>.
+        </span>
+        {% elif imovel.natureza == "LOTE" %}
+        <span class="helptext">
+            O preço do lote é o preço de venda do imóvel. Infraestrutura e lazer vêm do loteamento.
+            Não achou a quadra? <a href="{% url 'imoveis:loteamento_list' %}">Cadastre-a no loteamento</a>.
         </span>
         {% endif %}
         <button type="submit">Salvar dados</button>

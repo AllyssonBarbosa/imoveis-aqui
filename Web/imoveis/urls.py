@@ -17,4 +17,8 @@ urlpatterns = [
     path("predios/", views.PredioListView.as_view(), name="predio_list"),
     path("predios/novo/", views.predio_create, name="predio_create"),
     path("predios/<int:pk>/", views.predio_update, name="predio_update"),
+    path("loteamentos/", views.LoteamentoListView.as_view(), name="loteamento_list"),
+    path("loteamentos/novo/", views.loteamento_create, name="loteamento_create"),
+    path("loteamentos/<int:pk>/", views.loteamento_detail, name="loteamento_detail"),
+    path("loteamentos/<int:pk>/editar/", views.loteamento_update, name="loteamento_update"),
 ]

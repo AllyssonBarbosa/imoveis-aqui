@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block titulo %}{{ loteamento.nome }} — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+{% if messages %}
+    <ul class="mensagens">
+        {% for mensagem in messages %}<li>{{ mensagem }}</li>{% endfor %}
+    </ul>
+{% endif %}
+
+<div class="cabecalho-pagina">
+    <h1>{{ loteamento.nome }}</h1>
+    <a class="botao secundario" href="{% url 'imoveis:loteamento_update' loteamento.pk %}">Editar loteamento</a>
+</div>
+
+<div class="secao">
+    <h2>Loteamento</h2>
+    <p><strong>Cidade:</strong> {{ loteamento.cidade }}</p>
+    <p><strong>Incorporadora:</strong> {{ loteamento.incorporadora }}</p>
+    <ul class="lista-chips">
+        {% if loteamento.asfalto %}<li>Asfalto</li>{% endif %}
+        {% if loteamento.agua %}<li>Água</li>{% endif %}
+        {% if loteamento.energia %}<li>Energia</li>{% endif %}
+        {% if loteamento.esgoto %}<li>Esgoto</li>{% endif %}
+        {% if loteamento.iluminacao %}<li>Iluminação pública</li>{% endif %}
+    </ul>
+    {% if loteamento.areas_de_lazer %}<p><strong>Áreas de lazer:</strong> {{ loteamento.areas_de_lazer }}</p>{% endif %}
+</div>
+
+<div class="secao">
+    <div class="secao-cabecalho">
+        <h2>Quadras</h2>
+        <a class="botao" href="{% url 'imoveis:imovel_create' %}?natureza=LOTE">+ Novo lote</a>
+    </div>
+
+    {% if quadras %}
+    <table>
+        <thead>
+            <tr>
+                <th>Quadra</th>
+                <th>Lotes</th>
+                <th>Disponíveis</th>
+                <th>Vendidos</th>
+                <th>Lotes cadastrados</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for quadra, resumo in quadras %}
+            <tr>
+                <td>{{ quadra.identificacao }}</td>
+                <td>{{ resumo.total }}</td>
+                <td>{{ resumo.disponiveis }}</td>
+                <td>{{ resumo.vendidos }}</td>
+                <td>
+                    {% for lote in quadra.lotes.all %}
+                        <a href="{% url 'imoveis:imovel_detail' lote.imovel.pk %}">{{ lote.numero }}</a>{% if not forloop.last %}, {% endif %}
+                    {% empty %}—{% endfor %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <p class="helptext">Enquanto não há contratos no sistema, nenhum lote aparece como vendido.</p>
+    {% else %}
+    <p class="area-vazia">Nenhuma quadra ainda — cadastre a primeira abaixo.</p>
+    {% endif %}
+
+    <form method="post" class="upload-fotos">
+        {% csrf_token %}
+        {{ quadra_form.non_field_errors }}
+        {{ quadra_form.identificacao.label_tag }}
+        {{ quadra_form.identificacao }}
+        <button type="submit">Adicionar quadra</button>
+        {{ quadra_form.identificacao.errors }}
+    </form>
+</div>
+{% endblock %}

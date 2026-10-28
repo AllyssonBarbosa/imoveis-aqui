@@ -5,7 +5,18 @@ from rest_framework.settings import api_settings
 
 from core.models import Endereco
 
-from ..models import Apartamento, Caracteristica, Casa, FotoImovel, Imovel, Predio, Terreno
+from ..models import (
+    Apartamento,
+    Caracteristica,
+    Casa,
+    FotoImovel,
+    Imovel,
+    Lote,
+    Loteamento,
+    Predio,
+    Quadra,
+    Terreno,
+)
 
 
 class CaracteristicaSerializer(serializers.ModelSerializer):
@@ -151,10 +162,116 @@ class ApartamentoSerializer(DetalhesSerializerBase):
         return dados
 
 
+class LoteamentoSerializer(serializers.ModelSerializer):
+    """Loteamento com as quadras e, por quadra, lotes disponíveis × vendidos (só leitura)."""
+
+    quadras = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Loteamento
+        fields = [
+            "id", "nome", "cidade", "incorporadora", "asfalto", "agua", "energia", "esgoto",
+            "iluminacao", "areas_de_lazer", "quadras",
+        ]
+        # a unicidade (empresa, nome) é checada no full_clean, com a mensagem em português
+        validators = []
+
+    def get_quadras(self, loteamento):
+        return [
+            {"id": quadra.id, "identificacao": quadra.identificacao, **quadra.resumo_lotes()}
+            for quadra in loteamento.quadras.all()
+        ]
+
+    def validate(self, attrs):
+        instancia = self.instance or Loteamento()
+        for campo, valor in attrs.items():
+            setattr(instancia, campo, valor)
+        instancia.empresa = self.context["request"].user.empresa
+        try:
+            instancia.full_clean()
+        except DjangoValidationError as erro:
+            raise _erros_do_model(erro)
+        return attrs
+
+
+class LoteamentoResumoSerializer(serializers.ModelSerializer):
+    """O que o anúncio do lote leva do loteamento (sem a lista de quadras)."""
+
+    class Meta:
+        model = Loteamento
+        fields = [
+            "id", "nome", "cidade", "incorporadora", "asfalto", "agua", "energia", "esgoto",
+            "iluminacao", "areas_de_lazer",
+        ]
+
+
+class QuadraSerializer(serializers.ModelSerializer):
+    resumo = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Quadra
+        fields = ["id", "loteamento", "identificacao", "resumo"]
+        validators = []
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get("request")
+        if request is not None and "loteamento" in self.fields:
+            # loteamento de outra empresa cai em "não existe", sem revelar que existe
+            self.fields["loteamento"].queryset = Loteamento.objects.filter(
+                empresa=request.user.empresa
+            )
+
+    def get_resumo(self, quadra):
+        return quadra.resumo_lotes()
+
+    def validate(self, attrs):
+        instancia = self.instance or Quadra()
+        for campo, valor in attrs.items():
+            setattr(instancia, campo, valor)
+        try:
+            instancia.full_clean()
+        except DjangoValidationError as erro:
+            raise _erros_do_model(erro)
+        return attrs
+
+
+class LoteSerializer(DetalhesSerializerBase):
+    """Na escrita, `quadra` é o id; na leitura, vem a quadra com o loteamento inteiro."""
+
+    class Meta:
+        model = Lote
+        fields = [
+            "quadra", "numero", "area", "frente", "fundo", "entrada_minima",
+            "parcelas_maximas", "condicoes_parcelamento",
+        ]
+        # número repetido na quadra é checado no full_clean, com a mensagem em português
+        validators = []
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        imovel = self.context.get("imovel")
+        if imovel is not None:
+            self.fields["quadra"].queryset = Quadra.objects.filter(
+                loteamento__empresa=imovel.empresa
+            )
+
+    def to_representation(self, instancia):
+        dados = super().to_representation(instancia)
+        dados["vendido"] = instancia.vendido
+        dados["quadra"] = {
+            "id": instancia.quadra.id,
+            "identificacao": instancia.quadra.identificacao,
+            "loteamento": LoteamentoResumoSerializer(instancia.quadra.loteamento).data,
+        }
+        return dados
+
+
 SERIALIZER_POR_NATUREZA = {
     Imovel.Natureza.CASA: CasaSerializer,
     Imovel.Natureza.TERRENO: TerrenoSerializer,
     Imovel.Natureza.APARTAMENTO: ApartamentoSerializer,
+    Imovel.Natureza.LOTE: LoteSerializer,
 }
 
 
@@ -164,6 +281,7 @@ class ImovelSerializer(serializers.ModelSerializer):
     casa = serializers.SerializerMethodField()
     terreno = serializers.SerializerMethodField()
     apartamento = serializers.SerializerMethodField()
+    lote = serializers.SerializerMethodField()
     fotos = FotoImovelSerializer(many=True, read_only=True)
     pode_publicar = serializers.BooleanField(read_only=True)
 
@@ -172,7 +290,7 @@ class ImovelSerializer(serializers.ModelSerializer):
         fields = [
             "id", "codigo", "titulo", "natureza", "corretor_responsavel", "proprietario", "finalidade",
             "preco_venda", "preco_aluguel", "preco_condominio", "preco_iptu", "descricao",
-            "caracteristicas", "casa", "terreno", "apartamento", "endereco", "fotos", "publicado", "pode_publicar", "criado_em",
+            "caracteristicas", "casa", "terreno", "apartamento", "lote", "endereco", "fotos", "publicado", "pode_publicar", "criado_em",
         ]
         read_only_fields = ["id", "publicado", "endereco", "fotos", "pode_publicar", "criado_em"]
 
@@ -189,6 +307,9 @@ class ImovelSerializer(serializers.ModelSerializer):
 
     def get_apartamento(self, imovel):
         return self._detalhes_se_for(imovel, Imovel.Natureza.APARTAMENTO)
+
+    def get_lote(self, imovel):
+        return self._detalhes_se_for(imovel, Imovel.Natureza.LOTE)
 
     def validate_natureza(self, valor):
         if self.instance and valor != self.instance.natureza:

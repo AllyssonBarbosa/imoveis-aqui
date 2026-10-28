@@ -16,7 +16,18 @@ from empresas.models import Empresa
 from localizacao.models import Cidade
 from proprietarios.models import Proprietario
 
-from .models import Apartamento, Caracteristica, Casa, FotoImovel, Imovel, Predio, Terreno
+from .models import (
+    Apartamento,
+    Caracteristica,
+    Casa,
+    FotoImovel,
+    Imovel,
+    Lote,
+    Loteamento,
+    Predio,
+    Quadra,
+    Terreno,
+)
 
 
 def criar_empresa(nome="Imobiliária Teste", cnpj="74.286.058/0001-80"):
@@ -980,4 +991,340 @@ class ApiPredioApartamentoTests(APITestCase):
         response = self.client.put(reverse("imovel-endereco", args=[self.apto.pk]), {
             "logradouro": "Rua X", "cidade": self.cidade.pk,
         })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+def criar_loteamento(empresa, nome="Jardim das Flores", **extra):
+    cidade = Cidade.objects.get_or_create(nome="São Paulo", uf="SP")[0]
+    dados = dict(
+        empresa=empresa, nome=nome, cidade=cidade, incorporadora="Incorporadora Alfa",
+        asfalto=True, agua=True, energia=True, esgoto=False, iluminacao=True,
+        areas_de_lazer="Praça e quadra poliesportiva",
+    )
+    dados.update(extra)
+    return Loteamento.objects.create(**dados)
+
+
+def criar_imovel_lote(empresa, corretor, proprietario, codigo, **extra):
+    imovel = criar_imovel(
+        empresa, corretor, proprietario, codigo=codigo, natureza=Imovel.Natureza.LOTE,
+        preco_venda="120000.00", **extra,
+    )
+    imovel.refresh_from_db()  # preço volta como Decimal, como chega pelas telas e pela API
+    return imovel
+
+
+def dados_lote(quadra, **extra):
+    dados = {
+        "quadra": quadra.pk, "numero": "7", "area": "250.00", "frente": "10.00",
+        "fundo": "25.00", "entrada_minima": "12000.00", "parcelas_maximas": 120,
+        "condicoes_parcelamento": "Correção anual pelo IPCA",
+    }
+    dados.update(extra)
+    return dados
+
+
+def criar_lote(imovel, quadra, **extra):
+    dados = dados_lote(quadra, **extra)
+    dados["quadra"] = quadra
+    return Lote.objects.create(imovel=imovel, **dados)
+
+
+class LoteamentoModelTests(TestCase):
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        self.loteamento = criar_loteamento(self.empresa)
+        self.quadra_a = Quadra.objects.create(loteamento=self.loteamento, identificacao="A")
+        self.imovel1 = criar_imovel_lote(self.empresa, self.corretor, self.proprietario, "L1")
+        self.imovel2 = criar_imovel_lote(self.empresa, self.corretor, self.proprietario, "L2")
+
+    def _lote(self, imovel, **extra):
+        dados = dados_lote(self.quadra_a, **extra)
+        dados["quadra"] = self.quadra_a
+        return Lote(imovel=imovel, **dados)
+
+    def test_cadastro_do_lote_na_quadra(self):
+        lote = self._lote(self.imovel1)
+        lote.full_clean()
+        lote.save()
+        self.assertEqual(self.quadra_a.lotes.count(), 1)
+
+    def test_quadra_repetida_no_loteamento_e_recusada(self):
+        repetida = Quadra(loteamento=self.loteamento, identificacao="A")
+        with self.assertRaises(ValidationError):
+            repetida.full_clean()
+
+    def test_mesma_quadra_em_outro_loteamento_e_aceita(self):
+        outro = criar_loteamento(self.empresa, nome="Recanto Verde")
+        Quadra(loteamento=outro, identificacao="A").full_clean()
+
+    def test_numero_de_lote_repetido_na_quadra_e_recusado(self):
+        criar_lote(self.imovel1, self.quadra_a)
+        with self.assertRaises(ValidationError) as contexto:
+            self._lote(self.imovel2).full_clean()
+        self.assertIn("Já existe um lote com esse número nesta quadra.", contexto.exception.messages)
+
+    def test_banco_tambem_recusa_numero_repetido(self):
+        criar_lote(self.imovel1, self.quadra_a)
+        with self.assertRaises(IntegrityError):
+            criar_lote(self.imovel2, self.quadra_a)
+
+    def test_mesmo_numero_em_outra_quadra_e_aceito(self):
+        criar_lote(self.imovel1, self.quadra_a)
+        quadra_b = Quadra.objects.create(loteamento=self.loteamento, identificacao="B")
+        lote = self._lote(self.imovel2)
+        lote.quadra = quadra_b
+        lote.full_clean()
+
+    def test_quadra_de_outra_empresa_e_recusada(self):
+        outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        quadra_de_fora = Quadra.objects.create(
+            loteamento=criar_loteamento(outra_empresa), identificacao="A"
+        )
+        lote = self._lote(self.imovel1)
+        lote.quadra = quadra_de_fora
+        with self.assertRaises(ValidationError) as contexto:
+            lote.full_clean()
+        self.assertIn("quadra", contexto.exception.message_dict)
+
+    def test_entrada_maior_que_preco_e_recusada(self):
+        with self.assertRaises(ValidationError) as contexto:
+            self._lote(self.imovel1, entrada_minima="200000.00").full_clean()
+        self.assertIn("entrada_minima", contexto.exception.message_dict)
+
+    def test_lote_nao_entra_em_casa(self):
+        casa = criar_imovel(self.empresa, self.corretor, self.proprietario, codigo="CASA")
+        with self.assertRaises(ValidationError):
+            self._lote(casa).full_clean()
+
+    def test_resumo_por_quadra_conta_disponiveis_e_vendidos(self):
+        criar_lote(self.imovel1, self.quadra_a, numero="1")
+        criar_lote(self.imovel2, self.quadra_a, numero="2")
+        self.assertEqual(
+            self.quadra_a.resumo_lotes(), {"total": 2, "disponiveis": 2, "vendidos": 0}
+        )
+
+    def test_lote_publica_como_imovel(self):
+        endereco = Endereco.objects.create(
+            logradouro="Rua 1", cidade=self.loteamento.cidade, latitude="-23.5", longitude="-46.6",
+        )
+        self.imovel1.endereco = endereco
+        self.imovel1.save()
+        criar_lote(self.imovel1, self.quadra_a)
+        self.imovel1.publicar()
+        self.assertTrue(Imovel.objects.get(pk=self.imovel1.pk).publicado)
+
+
+class PainelLoteamentoTests(TestCase):
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        self.loteamento = criar_loteamento(self.empresa)
+        self.quadra_a = Quadra.objects.create(loteamento=self.loteamento, identificacao="A")
+        self.imovel = criar_imovel_lote(self.empresa, self.corretor, self.proprietario, "L1")
+        self.client.force_login(self.corretor)
+
+    def test_gestor_nao_acessa_loteamentos(self):
+        self.client.force_login(criar_gestor(self.empresa))
+        response = self.client.get(reverse("imoveis:loteamento_list"))
+        self.assertEqual(response.status_code, 403)
+
+    def test_cadastra_loteamento(self):
+        response = self.client.post(reverse("imoveis:loteamento_create"), {
+            "nome": "Recanto Verde", "cidade": self.loteamento.cidade.pk,
+            "incorporadora": "Beta", "asfalto": "on", "agua": "on", "areas_de_lazer": "Praça",
+        })
+        loteamento = Loteamento.objects.get(nome="Recanto Verde")
+        self.assertRedirects(response, reverse("imoveis:loteamento_detail", args=[loteamento.pk]))
+        self.assertEqual(loteamento.empresa, self.empresa)
+        self.assertTrue(loteamento.asfalto)
+        self.assertFalse(loteamento.esgoto)
+
+    def test_nome_repetido_mostra_erro(self):
+        response = self.client.post(reverse("imoveis:loteamento_create"), {
+            "nome": "Jardim das Flores", "cidade": self.loteamento.cidade.pk, "incorporadora": "X",
+        })
+        self.assertContains(response, "Já existe um loteamento com esse nome")
+
+    def test_cadastra_quadra_na_tela_do_loteamento(self):
+        url = reverse("imoveis:loteamento_detail", args=[self.loteamento.pk])
+        response = self.client.post(url, {"identificacao": "B"})
+        self.assertRedirects(response, url)
+        self.assertTrue(self.loteamento.quadras.filter(identificacao="B").exists())
+
+    def test_quadra_repetida_mostra_erro(self):
+        response = self.client.post(
+            reverse("imoveis:loteamento_detail", args=[self.loteamento.pk]), {"identificacao": "A"}
+        )
+        self.assertContains(response, "Já existe uma quadra com essa identificação")
+
+    def test_tela_mostra_disponiveis_e_vendidos_por_quadra(self):
+        criar_lote(self.imovel, self.quadra_a)
+        Quadra.objects.create(loteamento=self.loteamento, identificacao="B")
+        response = self.client.get(reverse("imoveis:loteamento_detail", args=[self.loteamento.pk]))
+        resumos = {q.identificacao: r for q, r in response.context["quadras"]}
+        self.assertEqual(resumos["A"], {"total": 1, "disponiveis": 1, "vendidos": 0})
+        self.assertEqual(resumos["B"], {"total": 0, "disponiveis": 0, "vendidos": 0})
+        self.assertContains(response, "Vendidos")
+
+    def test_loteamento_de_outra_empresa_da_404(self):
+        outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        de_fora = criar_loteamento(outra_empresa)
+        response = self.client.get(reverse("imoveis:loteamento_detail", args=[de_fora.pk]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_atalho_novo_lote_ja_escolhe_a_natureza(self):
+        response = self.client.get(reverse("imoveis:imovel_create") + "?natureza=LOTE")
+        self.assertEqual(response.context["form"].initial["natureza"], Imovel.Natureza.LOTE)
+
+    def test_tela_do_lote_so_lista_quadras_da_empresa(self):
+        outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        Quadra.objects.create(loteamento=criar_loteamento(outra_empresa), identificacao="Z")
+        response = self.client.get(reverse("imoveis:imovel_detail", args=[self.imovel.pk]))
+        form = response.context["detalhes_form"]
+        self.assertEqual(list(form.fields["quadra"].queryset), [self.quadra_a])
+
+    def test_salva_lote_e_detalhe_mostra_quadra_e_loteamento(self):
+        response = self.client.post(
+            reverse("imoveis:imovel_atualizar_detalhes", args=[self.imovel.pk]),
+            dados_lote(self.quadra_a),
+        )
+        self.assertRedirects(response, reverse("imoveis:imovel_detail", args=[self.imovel.pk]))
+        response = self.client.get(reverse("imoveis:imovel_detail", args=[self.imovel.pk]))
+        self.assertContains(response, "Quadra A")
+        self.assertContains(response, "Jardim das Flores")
+        self.assertContains(response, "Asfalto")
+        self.assertContains(response, "até 120x")
+
+    def test_lote_repetido_mostra_mensagem_clara(self):
+        outro = criar_imovel_lote(self.empresa, self.corretor, self.proprietario, "L2")
+        criar_lote(outro, self.quadra_a)
+        response = self.client.post(
+            reverse("imoveis:imovel_atualizar_detalhes", args=[self.imovel.pk]),
+            dados_lote(self.quadra_a),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Já existe um lote com esse número nesta quadra.")
+
+
+class ApiLoteamentoTests(APITestCase):
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        self.loteamento = criar_loteamento(self.empresa)
+        self.quadra_a = Quadra.objects.create(loteamento=self.loteamento, identificacao="A")
+        self.imovel = criar_imovel_lote(self.empresa, self.corretor, self.proprietario, "L1")
+        self.outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        self.loteamento_de_fora = criar_loteamento(self.outra_empresa, nome="De fora")
+        self.quadra_de_fora = Quadra.objects.create(
+            loteamento=self.loteamento_de_fora, identificacao="A"
+        )
+        self.client.force_authenticate(self.corretor)
+
+    def test_cria_loteamento(self):
+        response = self.client.post(reverse("loteamento-list"), {
+            "nome": "Recanto Verde", "cidade": self.loteamento.cidade.pk,
+            "incorporadora": "Beta", "agua": True,
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(Loteamento.objects.get(pk=response.data["id"]).empresa, self.empresa)
+
+    def test_lista_so_loteamentos_da_empresa(self):
+        response = self.client.get(reverse("loteamento-list"))
+        self.assertEqual([l["nome"] for l in response.data], ["Jardim das Flores"])
+
+    def test_loteamento_de_outra_empresa_da_404(self):
+        response = self.client.get(reverse("loteamento-detail", args=[self.loteamento_de_fora.pk]))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_loteamento_traz_resumo_por_quadra(self):
+        criar_lote(self.imovel, self.quadra_a)
+        response = self.client.get(reverse("loteamento-detail", args=[self.loteamento.pk]))
+        self.assertEqual(response.data["quadras"], [
+            {"id": self.quadra_a.pk, "identificacao": "A", "total": 1, "disponiveis": 1, "vendidos": 0}
+        ])
+
+    def test_cria_quadra(self):
+        response = self.client.post(reverse("quadra-list"), {
+            "loteamento": self.loteamento.pk, "identificacao": "B",
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+    def test_quadra_repetida_e_recusada(self):
+        response = self.client.post(reverse("quadra-list"), {
+            "loteamento": self.loteamento.pk, "identificacao": "A",
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_nao_cria_quadra_em_loteamento_de_outra_empresa(self):
+        response = self.client.post(reverse("quadra-list"), {
+            "loteamento": self.loteamento_de_fora.pk, "identificacao": "B",
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("loteamento", response.data)
+
+    def test_quadra_de_outra_empresa_da_404(self):
+        response = self.client.get(reverse("quadra-detail", args=[self.quadra_de_fora.pk]))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_put_detalhes_do_lote(self):
+        response = self.client.put(
+            reverse("imovel-detalhes", args=[self.imovel.pk]), dados_lote(self.quadra_a),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["quadra"]["loteamento"]["nome"], "Jardim das Flores")
+
+    def test_detalhe_do_lote_traz_quadra_e_loteamento(self):
+        criar_lote(self.imovel, self.quadra_a)
+        response = self.client.get(reverse("imovel-detail", args=[self.imovel.pk]))
+        lote = response.data["lote"]
+        self.assertEqual(response.data["natureza"], "LOTE")
+        self.assertEqual(response.data["preco_venda"], "120000.00")
+        self.assertEqual(lote["numero"], "7")
+        self.assertEqual(lote["parcelas_maximas"], 120)
+        self.assertFalse(lote["vendido"])
+        self.assertEqual(lote["quadra"]["identificacao"], "A")
+        self.assertTrue(lote["quadra"]["loteamento"]["asfalto"])
+        self.assertEqual(lote["quadra"]["loteamento"]["incorporadora"], "Incorporadora Alfa")
+
+    def test_lote_repetido_e_recusado_com_mensagem(self):
+        outro = criar_imovel_lote(self.empresa, self.corretor, self.proprietario, "L2")
+        criar_lote(outro, self.quadra_a)
+        response = self.client.put(
+            reverse("imovel-detalhes", args=[self.imovel.pk]), dados_lote(self.quadra_a),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn(
+            "Já existe um lote com esse número nesta quadra.",
+            [str(m) for m in response.data["non_field_errors"]],
+        )
+
+    def test_nao_liga_lote_a_quadra_de_outra_empresa(self):
+        response = self.client.put(
+            reverse("imovel-detalhes", args=[self.imovel.pk]), dados_lote(self.quadra_de_fora),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("quadra", response.data)
+
+    def test_lote_publicado_pela_api(self):
+        criar_lote(self.imovel, self.quadra_a)
+        self.client.put(reverse("imovel-endereco", args=[self.imovel.pk]), {
+            "logradouro": "Rua 1", "cidade": self.loteamento.cidade.pk,
+            "latitude": "-23.5", "longitude": "-46.6",
+        })
+        response = self.client.post(reverse("imovel-publicar", args=[self.imovel.pk]))
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertTrue(response.data["publicado"])
+        self.assertEqual(response.data["lote"]["quadra"]["loteamento"]["nome"], "Jardim das Flores")
+
+    def test_nao_exclui_quadra_com_lotes(self):
+        criar_lote(self.imovel, self.quadra_a)
+        response = self.client.delete(reverse("quadra-detail", args=[self.quadra_a.pk]))
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
