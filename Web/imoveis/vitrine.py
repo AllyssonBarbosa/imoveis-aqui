@@ -2,7 +2,8 @@
 
 Fica aqui, no Django, e não no app — o app só mostra o que a API devolve.
 A vitrine não tem usuário logado, então não filtra pela empresa do usuário:
-mostra imóveis de todas as empresas, mas só os publicados de empresa ativa.
+mostra imóveis de todas as empresas, mas só publicado, com situação disponível, de empresa
+ativa — regra única da W08 (ImovelQuerySet.na_vitrine), sem cópia aqui.
 """
 
 from django.db.models import Case, F, When
@@ -32,7 +33,7 @@ def imoveis_da_vitrine():
     - quartos / suites / vagas: da casa ou do apartamento (terreno fica sem)
     """
     return (
-        Imovel.objects.filter(publicado=True, empresa__ativa=True)
+        Imovel.objects.na_vitrine()
         .annotate(
             cidade_anuncio=_do_anuncio("cidade_id", "cidade_id"),
             bairro_anuncio=_do_anuncio("bairro", "bairro"),

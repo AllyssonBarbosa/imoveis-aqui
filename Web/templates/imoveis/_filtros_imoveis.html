@@ -1,0 +1,16 @@
+<form method="get" class="filtros">
+    {% for field in filtro %}
+    <label>
+        <span>{{ field.label }}</span>
+        {{ field }}
+    </label>
+    {% endfor %}
+    <div class="filtros-acoes">
+        <button type="submit">Filtrar</button>
+        {% if filtro.tem_filtro %}<a class="botao secundario" href="{{ request.path }}">Limpar</a>{% endif %}
+    </div>
+</form>
+<p class="helptext">
+    {{ imoveis|length }} imóve{{ imoveis|length|pluralize:"l,is" }}
+    encontrado{{ imoveis|length|pluralize }}{% if filtro.tem_filtro %} com esses filtros{% endif %}.
+</p>

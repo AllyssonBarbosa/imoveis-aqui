@@ -519,3 +519,27 @@ fieldset {
 .grade-formulario p {
   min-width: 0;
 }
+
+/* Filtros das listas de imóveis */
+.filtros {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.filtros label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  flex: 1 1 160px;
+  min-width: 0;
+  font-size: 0.8rem;
+  color: var(--cor-texto-suave);
+}
+
+.filtros-acoes {
+  display: flex;
+  gap: 0.5rem;
+}
