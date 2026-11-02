@@ -1,0 +1,108 @@
+{% extends "site_publico/base_site.html" %}
+
+{% block titulo %}Imóveis em {{ cidade.nome }}/{{ cidade.uf }} — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+<div class="cabecalho-pagina">
+    <h1>Imóveis em {{ cidade.nome }}/{{ cidade.uf }}</h1>
+    <span class="texto-suave">{{ pagina.paginator.count }} imóve{{ pagina.paginator.count|pluralize:"l,is" }}</span>
+</div>
+
+{# GET: os filtros ficam na URL, com os mesmos nomes de parâmetro da API #}
+<form method="get" class="secao filtros">
+    <div class="grade-formulario">
+        <p class="campo-largo">
+            <label for="busca">Buscar</label>
+            <input type="text" id="busca" name="busca" value="{{ filtros.busca }}" placeholder="Título, bairro ou descrição">
+        </p>
+        <p>
+            <label for="finalidade">Finalidade</label>
+            <select id="finalidade" name="finalidade">
+                <option value="">Comprar ou alugar</option>
+                {% for valor, texto in finalidades %}
+                <option value="{{ valor }}" {% if filtros.finalidade == valor %}selected{% endif %}>{{ texto }}</option>
+                {% endfor %}
+            </select>
+        </p>
+        <p>
+            <label for="natureza">Tipo</label>
+            <select id="natureza" name="natureza">
+                <option value="">Todos</option>
+                {% for valor, texto in naturezas %}
+                <option value="{{ valor }}" {% if filtros.natureza == valor %}selected{% endif %}>{{ texto }}</option>
+                {% endfor %}
+            </select>
+        </p>
+        <p>
+            <label for="bairro">Bairro</label>
+            <input type="text" id="bairro" name="bairro" value="{{ filtros.bairro }}">
+        </p>
+        <p>
+            <label for="preco_min">Preço mínimo (R$)</label>
+            <input type="number" id="preco_min" name="preco_min" min="0" step="any" value="{{ filtros.preco_min }}">
+        </p>
+        <p>
+            <label for="preco_max">Preço máximo (R$)</label>
+            <input type="number" id="preco_max" name="preco_max" min="0" step="any" value="{{ filtros.preco_max }}">
+        </p>
+        <p>
+            <label for="area_min">Área mínima (m²)</label>
+            <input type="number" id="area_min" name="area_min" min="0" step="any" value="{{ filtros.area_min }}">
+        </p>
+        <p>
+            <label for="area_max">Área máxima (m²)</label>
+            <input type="number" id="area_max" name="area_max" min="0" step="any" value="{{ filtros.area_max }}">
+        </p>
+        <p>
+            <label for="quartos">Quartos (mínimo)</label>
+            <input type="number" id="quartos" name="quartos" min="0" value="{{ filtros.quartos }}">
+        </p>
+        <p>
+            <label for="suites">Suítes (mínimo)</label>
+            <input type="number" id="suites" name="suites" min="0" value="{{ filtros.suites }}">
+        </p>
+        <p>
+            <label for="vagas">Vagas (mínimo)</label>
+            <input type="number" id="vagas" name="vagas" min="0" value="{{ filtros.vagas }}">
+        </p>
+        <p>
+            <label for="ordenar">Ordenar por</label>
+            <select id="ordenar" name="ordenar">
+                {% for valor, texto in ordenacoes %}
+                <option value="{{ valor }}" {% if filtros.ordenar == valor %}selected{% endif %}>{{ texto }}</option>
+                {% endfor %}
+            </select>
+        </p>
+    </div>
+
+    {% if caracteristicas %}
+    <fieldset class="caracteristicas-campo">
+        <label>Características (o imóvel precisa ter todas as marcadas)</label>
+        <ul>
+            {% for c in caracteristicas %}
+            <li>
+                <label>
+                    <input type="checkbox" name="caracteristicas" value="{{ c.pk }}"
+                           {% if c.pk|stringformat:"s" in caracteristicas_selecionadas %}checked{% endif %}>
+                    {{ c.nome }}
+                </label>
+            </li>
+            {% endfor %}
+        </ul>
+    </fieldset>
+    {% endif %}
+
+    <div class="acoes-filtro">
+        <button type="submit">Buscar</button>
+        <a class="botao secundario" href="{% url 'site_publico:vitrine' cidade.pk %}">Limpar filtros</a>
+    </div>
+</form>
+
+{% if erros %}
+<ul class="errorlist erros-filtro">
+    {% for campo, mensagem in erros.items %}<li>Filtro “{{ campo }}”: {{ mensagem }}</li>{% endfor %}
+</ul>
+{% endif %}
+
+{% include "site_publico/_lista_imoveis.html" with texto_vazio="Nenhum imóvel encontrado com esses filtros." %}
+{% endblock %}

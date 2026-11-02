@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     'contas',
     'proprietarios',
     'imoveis',
+    'site_publico',
 ]
 
 MIDDLEWARE = [

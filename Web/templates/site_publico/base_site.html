@@ -1,0 +1,31 @@
+{% load static %}<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block titulo %}Imóveis Aqui{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'css/painel.css' %}">
+    <link rel="stylesheet" href="{% static 'css/site.css' %}">
+    {% block head_extra %}{% endblock %}
+</head>
+<body>
+    {# Site público: nada aqui depende de login — nenhuma página pede conta #}
+    <header class="topbar">
+        <a class="marca" href="{% url 'site_publico:inicio' %}">Imóveis Aqui</a>
+        <div class="cidade-atual">
+            {% if cidade_atual %}
+                <a href="{% url 'site_publico:vitrine' cidade_atual.pk %}">Imóveis em {{ cidade_atual.nome }}/{{ cidade_atual.uf }}</a>
+                · <a href="{% url 'site_publico:inicio' %}">trocar cidade</a>
+            {% else %}
+                <a href="{% url 'site_publico:inicio' %}">Escolher cidade</a>
+            {% endif %}
+        </div>
+    </header>
+
+    <main class="pagina pagina-site">
+        {% block conteudo %}{% endblock %}
+    </main>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,26 @@
+{% extends "site_publico/base_site.html" %}
+
+{% block conteudo %}
+<section class="destaque-inicio">
+    <h1>Encontre seu imóvel</h1>
+    <p>Escolha a cidade para ver casas, apartamentos e terrenos à venda e para alugar.</p>
+
+    {% if cidade_atual %}
+    <p>
+        <a class="botao" href="{% url 'site_publico:vitrine' cidade_atual.pk %}">
+            Continuar em {{ cidade_atual.nome }}/{{ cidade_atual.uf }}
+        </a>
+    </p>
+    {% endif %}
+</section>
+
+{% if cidades %}
+<ul class="lista-cidades">
+    {% for cidade in cidades %}
+    <li><a href="{% url 'site_publico:vitrine' cidade.pk %}">{{ cidade.nome }} <span>{{ cidade.uf }}</span></a></li>
+    {% endfor %}
+</ul>
+{% else %}
+<p class="area-vazia">Ainda não há imóveis publicados. Volte em breve!</p>
+{% endif %}
+{% endblock %}

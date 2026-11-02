@@ -1,0 +1,189 @@
+{% extends "site_publico/base_site.html" %}
+{% load static vitrine_site %}
+
+{% block titulo %}{{ imovel.titulo }} — Imóveis Aqui{% endblock %}
+
+{% block head_extra %}
+{# Mapa: Leaflet + OpenStreetMap — gratuito, sem chave de API #}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+{% endblock %}
+
+{% block conteudo %}
+{# `imovel` vem do ImovelVitrineDetalheSerializer — o mesmo detalhe que o app recebe #}
+<div class="cabecalho-imovel">
+    <span class="etiqueta">{{ imovel.natureza|rotulo:"natureza" }} · {{ imovel.finalidade|rotulo:"finalidade" }}</span>
+    <h1>{{ imovel.titulo }}</h1>
+</div>
+{% with e=imovel.endereco %}
+{% if e %}
+<p class="endereco-anuncio">
+    {{ e.logradouro }}{% if e.numero %}, {{ e.numero }}{% endif %}{% if e.bairro %} — {{ e.bairro }}{% endif %} · {{ e.cidade.nome }}/{{ e.cidade.uf }}
+</p>
+{% endif %}
+{% endwith %}
+
+<div class="layout-imovel">
+    <div class="coluna-principal">
+
+        {# Galeria: a foto grande troca ao clicar na miniatura (static/js/galeria.js) #}
+        <section class="secao galeria" data-galeria>
+            {% if imovel.fotos %}
+                {% with primeira=imovel.fotos|first %}
+                <div class="galeria-principal">
+                    <img src="{{ primeira.imagem }}" alt="{{ imovel.titulo }}" data-galeria-principal>
+                </div>
+                {% endwith %}
+                {% if imovel.fotos|length > 1 %}
+                <div class="galeria-miniaturas">
+                    {% for foto in imovel.fotos %}
+                    <button type="button" class="galeria-miniatura" data-galeria-foto="{{ foto.imagem }}"
+                            aria-label="Ver foto {{ forloop.counter }}">
+                        <img src="{{ foto.imagem }}" alt="Foto {{ forloop.counter }} de {{ imovel.titulo }}" loading="lazy">
+                    </button>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            {% else %}
+                <p class="area-vazia">Este imóvel ainda não tem fotos.</p>
+            {% endif %}
+        </section>
+
+        <section class="secao">
+            <h2>Valores</h2>
+            <div class="linha-valores">
+                {% if imovel.preco_venda %}
+                <div class="valor-item"><span class="rotulo">Venda</span><span class="valor">R$ {{ imovel.preco_venda|floatformat:"2g" }}</span></div>
+                {% endif %}
+                {% if imovel.preco_aluguel %}
+                <div class="valor-item"><span class="rotulo">Aluguel</span><span class="valor">R$ {{ imovel.preco_aluguel|floatformat:"2g" }}/mês</span></div>
+                {% endif %}
+                {% if imovel.preco_condominio %}
+                <div class="valor-item"><span class="rotulo">Condomínio</span><span class="valor">R$ {{ imovel.preco_condominio|floatformat:"2g" }}</span></div>
+                {% endif %}
+                {% if imovel.preco_iptu %}
+                <div class="valor-item"><span class="rotulo">IPTU</span><span class="valor">R$ {{ imovel.preco_iptu|floatformat:"2g" }}</span></div>
+                {% endif %}
+            </div>
+            {% if imovel.descricao %}<p class="descricao">{{ imovel.descricao|linebreaksbr }}</p>{% endif %}
+            {% if imovel.caracteristicas %}
+            <ul class="lista-chips">
+                {% for c in imovel.caracteristicas %}<li>{{ c.nome }}</li>{% endfor %}
+            </ul>
+            {% endif %}
+        </section>
+
+        <section class="secao">
+            {% if imovel.casa %}
+                {% with d=imovel.casa %}
+                <h2>Dados da casa</h2>
+                <div class="linha-valores">
+                    <div class="valor-item"><span class="rotulo">Terreno</span><span class="valor">{{ d.area_terreno|floatformat:"-2" }} m²</span></div>
+                    <div class="valor-item"><span class="rotulo">Construída</span><span class="valor">{{ d.area_construida|floatformat:"-2" }} m²</span></div>
+                    <div class="valor-item"><span class="rotulo">Área livre</span><span class="valor">{{ d.area_livre|floatformat:"-2" }} m²</span></div>
+                </div>
+                <p>
+                    {{ d.quartos }} quarto{{ d.quartos|pluralize }} ({{ d.suites }} suíte{{ d.suites|pluralize }}) ·
+                    {{ d.banheiros }} banheiro{{ d.banheiros|pluralize }} · {{ d.salas }} sala{{ d.salas|pluralize }} ·
+                    {{ d.vagas }} vaga{{ d.vagas|pluralize }} · {{ d.pavimentos }} pavimento{{ d.pavimentos|pluralize }}
+                    {% if d.ano_construcao %}· construída em {{ d.ano_construcao }}{% endif %}
+                </p>
+                <ul class="lista-chips">
+                    {% if d.piscina %}<li>Piscina</li>{% endif %}
+                    {% if d.quintal %}<li>Quintal</li>{% endif %}
+                    {% if d.churrasqueira %}<li>Churrasqueira</li>{% endif %}
+                    {% if d.mobiliada %}<li>Mobiliada</li>{% endif %}
+                </ul>
+                {% endwith %}
+            {% elif imovel.apartamento %}
+                {% with d=imovel.apartamento %}
+                <h2>Dados do apartamento</h2>
+                <div class="linha-valores">
+                    <div class="valor-item"><span class="rotulo">Andar</span><span class="valor">{% if d.andar %}{{ d.andar }}º{% else %}Térreo{% endif %}</span></div>
+                    <div class="valor-item"><span class="rotulo">Privativa</span><span class="valor">{{ d.area_privativa|floatformat:"-2" }} m²</span></div>
+                    <div class="valor-item"><span class="rotulo">Total</span><span class="valor">{{ d.area_total|floatformat:"-2" }} m²</span></div>
+                </div>
+                <p>
+                    {{ d.quartos }} quarto{{ d.quartos|pluralize }} ({{ d.suites }} suíte{{ d.suites|pluralize }}) ·
+                    {{ d.banheiros }} banheiro{{ d.banheiros|pluralize }} · {{ d.vagas }} vaga{{ d.vagas|pluralize }}
+                    {% if d.posicao_solar %}· {{ d.posicao_solar|rotulo:"posicao_solar" }}{% endif %}
+                </p>
+                {% if d.varanda %}<ul class="lista-chips"><li>Varanda</li></ul>{% endif %}
+
+                {% with p=d.predio %}
+                <h3>Prédio {{ p.nome }}</h3>
+                <p>
+                    {{ p.andares }} andares · {{ p.elevadores }} elevador{{ p.elevadores|pluralize:"es" }}
+                    {% if p.ano_construcao %}· construído em {{ p.ano_construcao }}{% endif %}
+                </p>
+                <ul class="lista-chips">
+                    {% if p.portaria_24h %}<li>Portaria 24h</li>{% endif %}
+                    {% if p.piscina %}<li>Piscina</li>{% endif %}
+                    {% if p.academia %}<li>Academia</li>{% endif %}
+                    {% if p.salao_de_festas %}<li>Salão de festas</li>{% endif %}
+                    {% if p.playground %}<li>Playground</li>{% endif %}
+                </ul>
+                {% endwith %}
+                {% endwith %}
+            {% elif imovel.terreno %}
+                {% with d=imovel.terreno %}
+                <h2>Dados do terreno</h2>
+                <div class="linha-valores">
+                    <div class="valor-item"><span class="rotulo">Área total</span><span class="valor">{{ d.area_total|floatformat:"-2" }} m²</span></div>
+                </div>
+                <p>
+                    Frente {{ d.frente|floatformat:"-2" }} m · fundo {{ d.fundo|floatformat:"-2" }} m ·
+                    laterais {{ d.lateral_esquerda|floatformat:"-2" }} m e {{ d.lateral_direita|floatformat:"-2" }} m ·
+                    {{ d.topografia|rotulo:"topografia" }} · uso {{ d.uso_permitido|rotulo:"uso_permitido"|lower }}
+                </p>
+                <ul class="lista-chips">
+                    {% if d.murado %}<li>Murado</li>{% endif %}
+                    {% if d.esquina %}<li>De esquina</li>{% endif %}
+                </ul>
+                {% endwith %}
+            {% else %}
+                <h2>Dados do imóvel</h2>
+                <p class="texto-vazio">Detalhes ainda não informados.</p>
+            {% endif %}
+        </section>
+
+        {% if imovel.endereco.latitude and imovel.endereco.longitude %}
+        <section class="secao">
+            <h2>Localização</h2>
+            {# static/js/mapa.js lê a coordenada destes atributos e desenha o mapa #}
+            <div class="mapa" data-mapa
+                 data-latitude="{{ imovel.endereco.latitude }}" data-longitude="{{ imovel.endereco.longitude }}"></div>
+        </section>
+        {% endif %}
+    </div>
+
+    <aside class="coluna-contato">
+        <section class="secao contato">
+            <h2>Fale sobre este imóvel</h2>
+            {% if corretor %}
+                <div class="pessoa">
+                    {% if corretor.foto %}<img class="avatar" src="{{ corretor.foto }}" alt="">{% endif %}
+                    <div>
+                        <a href="{% url 'site_publico:corretor' corretor.id %}"><strong>{{ corretor.nome }}</strong></a>
+                        {% if corretor.creci %}<span class="texto-suave">CRECI {{ corretor.creci }}</span>{% endif %}
+                    </div>
+                </div>
+            {% endif %}
+            <p class="texto-suave">Anunciado por <a href="{% url 'site_publico:empresa' empresa_id %}">{{ empresa_nome }}</a></p>
+
+            {% if whatsapp %}
+            <a class="botao botao-whatsapp" href="{{ whatsapp }}" target="_blank" rel="noopener">Conversar pelo WhatsApp</a>
+            {% else %}
+            <p class="texto-vazio">Contato indisponível no momento.</p>
+            {% endif %}
+        </section>
+    </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="{% static 'js/mapa.js' %}"></script>
+<script src="{% static 'js/galeria.js' %}"></script>
+{% endblock %}

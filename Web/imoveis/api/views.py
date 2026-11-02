@@ -1,8 +1,4 @@
-from decimal import Decimal, InvalidOperation
-
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import F, Q
-from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status, viewsets
 from rest_framework.decorators import action
@@ -16,7 +12,7 @@ from core.permissions import EhCorretor
 from localizacao.models import Cidade
 
 from ..models import Caracteristica, FotoImovel, Imovel, Predio
-from ..vitrine import imoveis_da_vitrine
+from ..vitrine import IMOVEIS_POR_PAGINA, FiltroInvalido, buscar_na_vitrine, imoveis_da_vitrine
 from .serializers import (
     SERIALIZER_POR_NATUREZA,
     CaracteristicaSerializer,
@@ -162,45 +158,14 @@ class FotoImovelViewSet(viewsets.ModelViewSet):
 
 
 class PaginacaoVitrine(PageNumberPagination):
-    page_size = 20
-
-
-ORDENACOES_VITRINE = {
-    "recentes": [F("criado_em").desc()],
-    "preco": [F("preco_anuncio").asc(nulls_last=True)],
-    "-preco": [F("preco_anuncio").desc(nulls_last=True)],
-    "area": [F("area_anuncio").asc(nulls_last=True)],
-    "-area": [F("area_anuncio").desc(nulls_last=True)],
-}
-
-
-def _numero(params, nome, tipo=Decimal):
-    """Lê um filtro numérico da URL — valor inválido vira 400 com mensagem clara."""
-    valor = params.get(nome)
-    if valor in (None, ""):
-        return None
-    try:
-        numero = tipo(valor)
-    except (InvalidOperation, ValueError):
-        raise ValidationError({nome: "Informe um número válido."})
-    if numero < 0:
-        raise ValidationError({nome: "O valor não pode ser negativo."})
-    return numero
-
-
-def _escolha(params, nome, opcoes):
-    valor = params.get(nome)
-    if valor in (None, ""):
-        return None
-    if valor not in opcoes:
-        raise ValidationError({nome: f"Opções válidas: {', '.join(opcoes)}."})
-    return valor
+    page_size = IMOVEIS_POR_PAGINA
 
 
 class VitrineCidadeAPIView(generics.ListAPIView):
     """Busca da vitrine, sempre dentro de uma cidade. Pública: sem login e sem token.
 
     authentication_classes vazio: nem um token vencido no app impede a consulta.
+    Os filtros e a ordenação ficam em imoveis/vitrine.py — os mesmos do site.
     """
 
     permission_classes = [AllowAny]
@@ -210,76 +175,10 @@ class VitrineCidadeAPIView(generics.ListAPIView):
 
     def get_queryset(self):
         cidade = get_object_or_404(Cidade, pk=self.kwargs["cidade_id"])
-        params = self.request.query_params
-        queryset = imoveis_da_vitrine().filter(cidade_anuncio=cidade.pk)
-
-        busca = params.get("busca", "").strip()
-        if busca:
-            queryset = queryset.filter(
-                Q(titulo__icontains=busca)
-                | Q(bairro_anuncio__icontains=busca)
-                | Q(descricao__icontains=busca)
-            )
-
-        # "venda" também traz quem é "venda e aluguel" (e o mesmo pro aluguel)
-        finalidade = _escolha(params, "finalidade", Imovel.Finalidade.values)
-        if finalidade:
-            queryset = queryset.filter(
-                finalidade__in=[finalidade, Imovel.Finalidade.VENDA_E_ALUGUEL]
-            )
-
-        natureza = _escolha(params, "natureza", Imovel.Natureza.values)
-        if natureza:
-            queryset = queryset.filter(natureza=natureza)
-
-        # o preço comparado depende da finalidade buscada; sem finalidade, vale o que houver
-        if finalidade == Imovel.Finalidade.VENDA:
-            preco = F("preco_venda")
-        elif finalidade == Imovel.Finalidade.ALUGUEL:
-            preco = F("preco_aluguel")
-        else:
-            preco = Coalesce("preco_venda", "preco_aluguel")
-        queryset = queryset.annotate(preco_anuncio=preco)
-
-        faixas = {
-            "preco_min": "preco_anuncio__gte",
-            "preco_max": "preco_anuncio__lte",
-            "area_min": "area_anuncio__gte",
-            "area_max": "area_anuncio__lte",
-        }
-        for nome, lookup in faixas.items():
-            valor = _numero(params, nome)
-            if valor is not None:
-                queryset = queryset.filter(**{lookup: valor})
-
-        # quartos/suítes/vagas são "no mínimo" — quem pede 2 quartos aceita 3
-        minimos = {"quartos": "quartos_anuncio__gte", "suites": "suites_anuncio__gte", "vagas": "vagas_anuncio__gte"}
-        for nome, lookup in minimos.items():
-            valor = _numero(params, nome, tipo=int)
-            if valor is not None:
-                queryset = queryset.filter(**{lookup: valor})
-
-        bairro = params.get("bairro", "").strip()
-        if bairro:
-            queryset = queryset.filter(bairro_anuncio__iexact=bairro)
-
-        # ?caracteristicas=1,3 — o imóvel precisa ter todas as escolhidas
-        caracteristicas = params.get("caracteristicas", "").strip()
-        if caracteristicas:
-            try:
-                ids = {int(item) for item in caracteristicas.split(",") if item.strip()}
-            except ValueError:
-                raise ValidationError({"caracteristicas": "Informe os ids separados por vírgula."})
-            for caracteristica_id in ids:
-                queryset = queryset.filter(caracteristicas=caracteristica_id)
-
-        ordenar = _escolha(params, "ordenar", list(ORDENACOES_VITRINE)) or "recentes"
-        # o id no fim deixa a ordem estável entre as páginas quando há empate
-        return (
-            queryset.order_by(*ORDENACOES_VITRINE[ordenar], "-id")
-            .distinct()
-            .prefetch_related("fotos")
-        )
+        try:
+            return buscar_na_vitrine(cidade, self.request.query_params)
+        except FiltroInvalido as erro:
+            raise ValidationError(erro.erros)
 
 
 class ImovelVitrineDetalheAPIView(generics.RetrieveAPIView):

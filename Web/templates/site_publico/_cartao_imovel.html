@@ -1,0 +1,26 @@
+{% load vitrine_site %}
+{# Cartão do imóvel — recebe `imovel` já passado pelo ImovelVitrineSerializer (o mesmo do app) #}
+<a class="cartao-imovel" href="{% url 'site_publico:imovel' imovel.id %}">
+    <div class="cartao-imovel-foto">
+        {% if imovel.foto_capa %}
+            <img src="{{ imovel.foto_capa }}" alt="{{ imovel.titulo }}" loading="lazy">
+        {% else %}
+            <span>Sem foto</span>
+        {% endif %}
+    </div>
+    <div class="cartao-imovel-corpo">
+        <span class="etiqueta">{{ imovel.natureza|rotulo:"natureza" }} · {{ imovel.finalidade|rotulo:"finalidade" }}</span>
+        <h3>{{ imovel.titulo }}</h3>
+        {% if imovel.bairro %}<p class="bairro">{{ imovel.bairro }}</p>{% endif %}
+        <p class="numeros">
+            {% if imovel.area %}{{ imovel.area|floatformat:"-2" }} m²{% endif %}
+            {% if imovel.quartos is not None %}· {{ imovel.quartos }} quarto{{ imovel.quartos|pluralize }}{% endif %}
+            {% if imovel.suites %}· {{ imovel.suites }} suíte{{ imovel.suites|pluralize }}{% endif %}
+            {% if imovel.vagas %}· {{ imovel.vagas }} vaga{{ imovel.vagas|pluralize }}{% endif %}
+        </p>
+        <p class="preco">
+            {% if imovel.preco_venda %}<strong>R$ {{ imovel.preco_venda|floatformat:"2g" }}</strong>{% endif %}
+            {% if imovel.preco_aluguel %}<strong>R$ {{ imovel.preco_aluguel|floatformat:"2g" }}</strong>/mês{% endif %}
+        </p>
+    </div>
+</a>
