@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block titulo %}Prédios — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+<div class="cabecalho-pagina">
+    <h1>Prédios</h1>
+    <a class="botao" href="{% url 'imoveis:predio_create' %}">+ Novo prédio</a>
+</div>
+
+{% if messages %}
+    <ul class="mensagens">
+        {% for mensagem in messages %}<li>{{ mensagem }}</li>{% endfor %}
+    </ul>
+{% endif %}
+
+{% if predios %}
+<table>
+    <thead>
+        <tr>
+            <th>Nome</th>
+            <th>Endereço</th>
+            <th>Andares</th>
+            <th>Unidades por andar</th>
+            <th>Condomínio base</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for predio in predios %}
+        <tr>
+            <td><a href="{% url 'imoveis:predio_update' predio.pk %}">{{ predio.nome }}</a></td>
+            <td>{{ predio.endereco }}</td>
+            <td>{{ predio.andares }}</td>
+            <td>{{ predio.unidades_por_andar }}</td>
+            <td>{% if predio.valor_condominio_base %}R$ {{ predio.valor_condominio_base }}{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="area-vazia">Nenhum prédio cadastrado ainda — cadastre o prédio antes dos apartamentos.</p>
+{% endif %}
+{% endblock %}

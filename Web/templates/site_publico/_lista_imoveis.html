@@ -1,0 +1,22 @@
+{# Grade de cartões + paginação — usada na vitrine da cidade e nos perfis #}
+{% if imoveis %}
+<div class="grade-imoveis">
+    {% for imovel in imoveis %}
+        {% include "site_publico/_cartao_imovel.html" %}
+    {% endfor %}
+</div>
+
+{% if pagina.has_other_pages %}
+<nav class="paginacao" aria-label="Páginas">
+    {% if pagina.has_previous %}
+        <a class="botao secundario" href="?{% if query_sem_pagina %}{{ query_sem_pagina }}&{% endif %}page={{ pagina.previous_page_number }}">← Anterior</a>
+    {% endif %}
+    <span>Página {{ pagina.number }} de {{ pagina.paginator.num_pages }}</span>
+    {% if pagina.has_next %}
+        <a class="botao secundario" href="?{% if query_sem_pagina %}{{ query_sem_pagina }}&{% endif %}page={{ pagina.next_page_number }}">Próxima →</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% else %}
+<p class="area-vazia">{{ texto_vazio|default:"Nenhum imóvel encontrado." }}</p>
+{% endif %}

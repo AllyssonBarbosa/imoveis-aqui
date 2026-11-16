@@ -15,6 +15,7 @@
             <th></th>
             <th>Código</th>
             <th>Título</th>
+            <th>Natureza</th>
             <th>Finalidade</th>
             <th>Situação</th>
         </tr>
@@ -30,6 +31,7 @@
             </td>
             <td><a href="{% url 'imoveis:imovel_detail' imovel.pk %}">{{ imovel.codigo }}</a></td>
             <td>{{ imovel.titulo }}</td>
+            <td>{{ imovel.get_natureza_display }}</td>
             <td>{{ imovel.get_finalidade_display }}</td>
             <td>
                 {% if imovel.publicado %}
