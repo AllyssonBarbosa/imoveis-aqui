@@ -81,3 +81,7 @@ class ContratoSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         return self._salvar(instance, validated_data)
+
+
+class AssinaturaSerializer(serializers.Serializer):
+    data_assinatura = serializers.DateField()

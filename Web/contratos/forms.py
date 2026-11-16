@@ -92,3 +92,9 @@ class FiltroContratoForm(forms.Form):
         if self.cleaned_data["situacao"]:
             queryset = queryset.filter(situacao=self.cleaned_data["situacao"])
         return queryset
+
+
+class AssinaturaForm(forms.Form):
+    data_assinatura = campo_de_data(
+        "Data da assinatura", ajuda="Ao assinar, o imóvel sai da vitrine como vendido ou alugado.",
+    )

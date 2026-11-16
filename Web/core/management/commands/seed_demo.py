@@ -7,7 +7,7 @@ from clientes.models import Cliente
 from contas.models import Usuario
 from contratos.calculos import somar_meses
 from contratos.models import Contrato
-from contratos.servicos import salvar_contrato
+from contratos.servicos import assinar_contrato, salvar_contrato
 from empresas.models import Empresa
 from imoveis.models import Caracteristica, Imovel
 from localizacao.models import Cidade
@@ -17,7 +17,7 @@ from proprietarios.models import Proprietario
 class Command(BaseCommand):
     help = (
         "Cria os dados de teste (empresa, usuários, cidade, características, proprietário, "
-        "imóvel, cliente e um contrato de venda com parcelas)."
+        "imóvel, cliente e um contrato de venda assinado, com parcelas)."
     )
 
     def handle(self, *args, **options):
@@ -102,7 +102,7 @@ class Command(BaseCommand):
 
         if not Contrato.objects.filter(empresa=empresa, imovel=imovel).exists():
             hoje = timezone.localdate()
-            salvar_contrato(
+            contrato = salvar_contrato(
                 Contrato(
                     empresa=empresa, tipo=Contrato.Tipo.VENDA, imovel=imovel, cliente=cliente,
                     corretor=corretor, valor=Decimal("350000.00"), entrada=Decimal("50000.00"),
@@ -112,3 +112,5 @@ class Command(BaseCommand):
                 ),
                 gestor,
             )
+            # assinado no dia do início: o imóvel fica "vendido" e fora da vitrine
+            assinar_contrato(contrato, gestor, contrato.data_inicio)

@@ -1,18 +1,21 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
 
 from core.mixins import EmpresaScopedQuerySetMixin
 from core.permissions import EhGestor, PertenceAUmaEmpresa
 
 from ..models import Contrato
-from ..servicos import contratos_visiveis_para
-from .serializers import ContratoSerializer
+from ..servicos import assinar_contrato, contratos_visiveis_para
+from .serializers import AssinaturaSerializer, ContratoSerializer, erros_para_api
 
 
 class ContratoViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
     """Contratos da empresa, com as parcelas.
 
     - leitura: gestor (todos da empresa) e corretor (só os dele);
-    - cadastro e edição: só o gestor;
+    - cadastro, edição e assinatura (POST /contratos/<id>/assinar/): só o gestor;
     - sem DELETE.
     Contrato de outra empresa (ou de outro corretor) cai em 404.
     """
@@ -38,3 +41,14 @@ class ContratoViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         # a empresa é definida dentro do serializer (salvar_contrato precisa dela antes de validar)
         serializer.save()
+
+    @action(detail=True, methods=["post"])
+    def assinar(self, request, pk=None):
+        contrato = self.get_object()  # já filtrado pela empresa: de fora cai em 404
+        entrada = AssinaturaSerializer(data=request.data)
+        entrada.is_valid(raise_exception=True)
+        try:
+            contrato = assinar_contrato(contrato, request.user, entrada.validated_data["data_assinatura"])
+        except DjangoValidationError as erro:
+            raise erros_para_api(erro)
+        return Response(self.get_serializer(contrato).data)

@@ -2,15 +2,18 @@ from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db.models import Sum
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 from django.views import View
+from django.views.decorators.http import require_POST
 from django.views.generic import ListView
 
 from contas.models import Usuario
 from contas.views import CorretorOuGestorRequiredMixin, GestorRequiredMixin
+from imoveis.views import gestor_required
 
-from .forms import ContratoForm, FiltroContratoForm
+from .forms import AssinaturaForm, ContratoForm, FiltroContratoForm
 from .models import Contrato
-from .servicos import contratos_visiveis_para, salvar_contrato
+from .servicos import assinar_contrato, contratos_visiveis_para, salvar_contrato
 
 
 class ContratoListView(CorretorOuGestorRequiredMixin, ListView):
@@ -47,6 +50,7 @@ class ContratoDetailView(CorretorOuGestorRequiredMixin, View):
             "parcelas": parcelas,
             "total_parcelas": parcelas.aggregate(total=Sum("valor"))["total"] or 0,
             "eh_gestor": request.user.perfil == Usuario.Perfil.GESTOR,
+            "assinatura_form": AssinaturaForm(initial={"data_assinatura": timezone.localdate()}),
         })
 
 
@@ -86,3 +90,25 @@ class ContratoFormView(GestorRequiredMixin, View):
                     messages.success(request, "Contrato atualizado.")
                 return redirect("contratos:contrato_detail", pk=contrato.pk)
         return self._tela(form, contrato)
+
+
+@gestor_required
+@require_POST
+def contrato_assinar(request, pk):
+    """Só o gestor assina. Contrato de outra empresa cai em 404."""
+    contrato = get_object_or_404(contratos_visiveis_para(request.user), pk=pk)
+    form = AssinaturaForm(request.POST)
+    if not form.is_valid():
+        messages.error(request, form.errors["data_assinatura"][0])
+        return redirect("contratos:contrato_detail", pk=pk)
+    try:
+        contrato = assinar_contrato(contrato, request.user, form.cleaned_data["data_assinatura"])
+    except ValidationError as erro:
+        messages.error(request, erro.messages[0])
+    else:
+        messages.success(
+            request,
+            f"Contrato assinado. O imóvel {contrato.imovel.codigo} agora está "
+            f"{contrato.imovel.get_situacao_display().lower()} e saiu da vitrine.",
+        )
+    return redirect("contratos:contrato_detail", pk=pk)

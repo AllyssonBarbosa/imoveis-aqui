@@ -4,23 +4,30 @@ As contas de data e dinheiro usam datas e valores fixos, então o
 resultado não depende do dia em que o teste roda.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.core.exceptions import ValidationError
+from django.db.utils import IntegrityError
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from clientes.tests import OUTRO_CPF_VALIDO, criar_cliente
 from contas.models import Usuario
-from imoveis.models import Imovel
-from imoveis.tests import criar_corretor, criar_empresa, criar_gestor, criar_imovel, criar_proprietario
+from imoveis.models import HistoricoSituacao, Imovel
+from imoveis.tests import (
+    criar_corretor, criar_empresa, criar_gestor, criar_imovel, criar_proprietario, endereco_completo,
+)
 
 from .calculos import meses_de_vigencia, somar_meses, valores_das_parcelas, vencimentos
 from .models import Contrato, Parcela
-from .servicos import salvar_contrato
+from .servicos import assinar_contrato, salvar_contrato
+
+ONTEM = timezone.localdate() - timedelta(days=1)
 
 
 # --- contas puras (sem banco) ------------------------------------------------
@@ -573,3 +580,269 @@ class SeedDemoTests(TestCase):
         self.assertEqual(contrato.cliente.nome_razao_social, "João Comprador")
         self.assertEqual(contrato.parcelas.count(), 60)
         self.assertEqual(sum(contrato.parcelas.values_list("valor", flat=True)), Decimal("300000.00"))
+        self.assertTrue(contrato.assinado)
+        self.assertEqual(contrato.imovel.situacao, Imovel.Situacao.VENDIDO)
+
+
+# --- etapa 3: assinatura (critério 1) -----------------------------------------
+
+
+class AssinaturaTests(CenarioContrato, TestCase):
+    def setUp(self):
+        self.montar_cenario()
+
+    def test_assinar_venda_marca_situacao_data_e_quem_assinou(self):
+        contrato = assinar_contrato(salvar_contrato(self.novo_contrato(), self.gestor), self.gestor, ONTEM)
+        contrato.refresh_from_db()
+        self.assertEqual(contrato.situacao, Contrato.Situacao.ASSINADO)
+        self.assertEqual(contrato.data_assinatura, ONTEM)
+        self.assertEqual(contrato.assinado_por, self.gestor)
+
+    def test_venda_assinada_deixa_o_imovel_vendido_com_historico(self):
+        contrato = assinar_contrato(salvar_contrato(self.novo_contrato(), self.gestor), self.gestor, ONTEM)
+        self.casa.refresh_from_db()
+        self.assertEqual(self.casa.situacao, Imovel.Situacao.VENDIDO)
+        mudanca = HistoricoSituacao.objects.get(imovel=self.casa)
+        self.assertEqual(mudanca.situacao_anterior, Imovel.Situacao.DISPONIVEL)
+        self.assertEqual(mudanca.situacao_nova, Imovel.Situacao.VENDIDO)
+        self.assertEqual(mudanca.alterado_por, self.gestor)
+        self.assertIn(f"Contrato #{contrato.pk}", mudanca.observacao)
+
+    def test_locacao_assinada_deixa_o_imovel_alugado(self):
+        assinar_contrato(salvar_contrato(self.nova_locacao(), self.gestor), self.gestor, ONTEM)
+        self.apto.refresh_from_db()
+        self.assertEqual(self.apto.situacao, Imovel.Situacao.ALUGADO)
+
+    def test_imovel_reservado_pode_ser_assinado(self):
+        self.casa.mudar_situacao(Imovel.Situacao.RESERVADO, self.gestor, "Sinal pago")
+        assinar_contrato(salvar_contrato(self.novo_contrato(), self.gestor), self.gestor, ONTEM)
+        self.casa.refresh_from_db()
+        self.assertEqual(self.casa.situacao, Imovel.Situacao.VENDIDO)
+
+    def test_pode_assinar_com_data_de_hoje_mas_nao_no_futuro(self):
+        contrato = salvar_contrato(self.novo_contrato(), self.gestor)
+        with self.assertRaises(ValidationError) as erro:
+            assinar_contrato(contrato, self.gestor, timezone.localdate() + timedelta(days=1))
+        self.assertIn("data_assinatura", erro.exception.message_dict)
+        assinar_contrato(contrato, self.gestor, timezone.localdate())
+
+    def test_contrato_ja_assinado_nao_assina_de_novo(self):
+        contrato = assinar_contrato(salvar_contrato(self.novo_contrato(), self.gestor), self.gestor, ONTEM)
+        with self.assertRaises(ValidationError) as erro:
+            assinar_contrato(contrato, self.gestor, ONTEM)
+        self.assertIn("já está assinado", str(erro.exception))
+
+    def test_imovel_nao_tem_dois_contratos_assinados(self):
+        primeiro = salvar_contrato(self.novo_contrato(), self.gestor)
+        segundo = salvar_contrato(self.novo_contrato(observacoes="proposta concorrente"), self.gestor)
+        assinar_contrato(primeiro, self.gestor, ONTEM)
+        with self.assertRaises(ValidationError) as erro:
+            assinar_contrato(segundo, self.gestor, ONTEM)
+        self.assertIn(f"já tem um contrato assinado (#{primeiro.pk})", str(erro.exception))
+        segundo.refresh_from_db()
+        self.assertEqual(segundo.situacao, Contrato.Situacao.RASCUNHO)
+        self.assertEqual(HistoricoSituacao.objects.filter(imovel=self.casa).count(), 1)
+
+    def test_banco_tambem_recusa_dois_contratos_assinados(self):
+        primeiro = salvar_contrato(self.novo_contrato(), self.gestor)
+        segundo = salvar_contrato(self.novo_contrato(), self.gestor)
+        Contrato.objects.filter(pk=primeiro.pk).update(situacao=Contrato.Situacao.ASSINADO)
+        with self.assertRaises(IntegrityError):
+            Contrato.objects.filter(pk=segundo.pk).update(situacao=Contrato.Situacao.ASSINADO)
+
+    def test_imovel_ja_vendido_sem_contrato_nao_aceita_assinatura(self):
+        self.casa.mudar_situacao(Imovel.Situacao.VENDIDO, self.gestor, "Vendido por fora")
+        with self.assertRaises(ValidationError) as erro:
+            assinar_contrato(salvar_contrato(self.novo_contrato(), self.gestor), self.gestor, ONTEM)
+        self.assertIn("só imóvel disponível ou reservado", str(erro.exception))
+
+    def test_finalidade_mudada_depois_do_rascunho_e_conferida_na_assinatura(self):
+        contrato = salvar_contrato(self.novo_contrato(), self.gestor)
+        Imovel.objects.filter(pk=self.casa.pk).update(
+            finalidade=Imovel.Finalidade.ALUGUEL, preco_aluguel=Decimal("3000.00")
+        )
+        with self.assertRaises(ValidationError):
+            assinar_contrato(contrato, self.gestor, ONTEM)
+
+    def test_se_algo_falha_no_meio_nada_fica_gravado(self):
+        """Transação: se a mudança do imóvel falhar, o contrato não fica assinado."""
+        contrato = salvar_contrato(self.novo_contrato(), self.gestor)
+        with mock.patch.object(Imovel, "mudar_situacao", side_effect=RuntimeError("falha simulada")):
+            with self.assertRaises(RuntimeError):
+                assinar_contrato(contrato, self.gestor, ONTEM)
+        contrato.refresh_from_db()
+        self.assertEqual(contrato.situacao, Contrato.Situacao.RASCUNHO)
+        self.assertIsNone(contrato.data_assinatura)
+
+
+class VitrineAposAssinaturaTests(CenarioContrato, APITestCase):
+    """O imóvel assinado sai da vitrine; o cliente nunca aparece nela (antes ou depois)."""
+
+    def setUp(self):
+        self.montar_cenario()
+        self.casa.endereco = endereco_completo()
+        self.casa.publicado = True
+        self.casa.save()
+        self.cidade = self.casa.endereco.cidade
+        # outro imóvel da mesma empresa continua na vitrine (perfis e busca seguem com conteúdo)
+        self.outra_casa = criar_imovel(
+            self.empresa, self.corretor, self.casa.proprietario, codigo="VENDA-2",
+            titulo="Outra casa à venda", endereco=endereco_completo(), publicado=True,
+        )
+        self.contrato = salvar_contrato(self.novo_contrato(), self.gestor)
+
+    def ids_na_busca(self):
+        response = self.client.get(reverse("publico-vitrine-cidade", args=[self.cidade.pk]))
+        return {item["id"] for item in response.data["results"]}
+
+    def paginas_publicas(self, imovel):
+        urls = [
+            reverse("site_publico:inicio"),
+            reverse("site_publico:vitrine", args=[self.cidade.pk]),
+            reverse("site_publico:empresa", args=[self.empresa.pk]),
+            reverse("site_publico:corretor", args=[self.corretor.pk]),
+            reverse("publico-vitrine-cidade", args=[self.cidade.pk]),
+            reverse("site_publico:imovel", args=[imovel.pk]),
+            reverse("publico-imovel", args=[imovel.pk]),
+        ]
+        return [self.client.get(url) for url in urls]
+
+    def test_antes_de_assinar_o_imovel_esta_na_vitrine(self):
+        self.assertIn(self.casa.pk, self.ids_na_busca())
+        self.assertEqual(self.client.get(reverse("site_publico:imovel", args=[self.casa.pk])).status_code, 200)
+
+    def test_depois_de_assinar_o_imovel_sai_do_site_e_da_api(self):
+        assinar_contrato(self.contrato, self.gestor, ONTEM)
+        self.assertNotIn(self.casa.pk, self.ids_na_busca())
+        self.assertIn(self.outra_casa.pk, self.ids_na_busca())
+        for url in (
+            reverse("site_publico:imovel", args=[self.casa.pk]),
+            reverse("publico-imovel", args=[self.casa.pk]),
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 404)
+
+    def test_depois_de_assinar_o_imovel_nao_recebe_contato(self):
+        assinar_contrato(self.contrato, self.gestor, ONTEM)
+        response = self.client.post(
+            reverse("publico-imovel-contato", args=[self.casa.pk]), {"canal": "WHATSAPP"}, format="json"
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_cliente_nunca_aparece_na_vitrine(self):
+        segredos = [
+            self.cliente.nome_razao_social, self.cliente.documento, self.cliente.documento_formatado,
+            self.cliente.telefone,
+        ]
+        antes = self.paginas_publicas(self.casa)
+        assinar_contrato(self.contrato, self.gestor, ONTEM)
+        depois = self.paginas_publicas(self.outra_casa)
+        for response in antes + depois:
+            self.assertEqual(response.status_code, 200, response.request["PATH_INFO"])
+            corpo = response.content.decode()
+            for segredo in segredos:
+                self.assertNotIn(segredo, corpo, f"{response.request['PATH_INFO']} vazou {segredo}")
+
+
+class PainelAssinaturaTests(CenarioContrato, TestCase):
+    def setUp(self):
+        self.montar_cenario()
+        self.contrato = salvar_contrato(self.novo_contrato(), self.gestor)
+
+    def assinar(self, usuario, contrato=None, data=None):
+        self.client.force_login(usuario)
+        contrato = contrato or self.contrato
+        return self.client.post(
+            reverse("contratos:contrato_assinar", args=[contrato.pk]),
+            {"data_assinatura": data or ONTEM.strftime("%d/%m/%Y")},
+        )
+
+    def test_gestor_assina_pelo_painel(self):
+        response = self.assinar(self.gestor)
+        # fetch_redirect_response=False: senão o assertRedirects abre a página e "consome" a mensagem
+        self.assertRedirects(
+            response, reverse("contratos:contrato_detail", args=[self.contrato.pk]),
+            fetch_redirect_response=False,
+        )
+        self.contrato.refresh_from_db()
+        self.casa.refresh_from_db()
+        self.assertTrue(self.contrato.assinado)
+        self.assertEqual(self.casa.situacao, Imovel.Situacao.VENDIDO)
+        detalhe = self.client.get(response["Location"])
+        self.assertContains(detalhe, "saiu da vitrine")
+        self.assertNotContains(detalhe, "Assinar contrato")
+
+    def test_tela_mostra_o_botao_so_para_o_gestor_no_rascunho(self):
+        url = reverse("contratos:contrato_detail", args=[self.contrato.pk])
+        self.client.force_login(self.gestor)
+        self.assertContains(self.client.get(url), "Assinar contrato")
+        self.client.force_login(self.corretor)
+        self.assertNotContains(self.client.get(url), "Assinar contrato")
+
+    def test_corretor_e_administrador_nao_assinam(self):
+        for usuario in (self.corretor, self.admin):
+            with self.subTest(perfil=usuario.perfil):
+                self.assertEqual(self.assinar(usuario).status_code, 403)
+        self.contrato.refresh_from_db()
+        self.assertFalse(self.contrato.assinado)
+
+    def test_contrato_de_outra_empresa_da_404(self):
+        self.assertEqual(self.assinar(self.gestor_b).status_code, 404)
+
+    def test_segundo_contrato_do_imovel_mostra_mensagem(self):
+        segundo = salvar_contrato(self.novo_contrato(), self.gestor)
+        self.assinar(self.gestor)
+        response = self.assinar(self.gestor, contrato=segundo)
+        detalhe = self.client.get(response["Location"])
+        self.assertContains(detalhe, "já tem um contrato assinado")
+        segundo.refresh_from_db()
+        self.assertFalse(segundo.assinado)
+
+    def test_data_no_formato_errado_nao_assina(self):
+        self.assinar(self.gestor, data="2027-01-10")
+        self.contrato.refresh_from_db()
+        self.assertFalse(self.contrato.assinado)
+
+    def test_assinar_so_aceita_post(self):
+        self.client.force_login(self.gestor)
+        response = self.client.get(reverse("contratos:contrato_assinar", args=[self.contrato.pk]))
+        self.assertEqual(response.status_code, 405)
+
+
+class ApiAssinaturaTests(CenarioContrato, APITestCase):
+    def setUp(self):
+        self.montar_cenario()
+        self.contrato = salvar_contrato(self.novo_contrato(), self.gestor)
+
+    def assinar(self, usuario, contrato=None, **dados):
+        self.client.force_authenticate(usuario)
+        contrato = contrato or self.contrato
+        return self.client.post(
+            reverse("contrato-assinar", args=[contrato.pk]),
+            dados or {"data_assinatura": ONTEM.isoformat()}, format="json",
+        )
+
+    def test_gestor_assina_pela_api(self):
+        response = self.assinar(self.gestor)
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["situacao"], "ASSINADO")
+        self.assertEqual(response.data["data_assinatura"], ONTEM.isoformat())
+        self.casa.refresh_from_db()
+        self.assertEqual(self.casa.situacao, Imovel.Situacao.VENDIDO)
+
+    def test_corretor_nao_assina(self):
+        self.assertEqual(self.assinar(self.corretor).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_contrato_de_outra_empresa_da_404(self):
+        self.assertEqual(self.assinar(self.gestor_b).status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_sem_data_e_recusado(self):
+        response = self.assinar(self.gestor, data_assinatura="")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_segundo_contrato_do_imovel_e_recusado(self):
+        segundo = salvar_contrato(self.novo_contrato(), self.gestor)
+        self.assinar(self.gestor)
+        response = self.assinar(self.gestor, contrato=segundo)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("já tem um contrato assinado", str(response.data))

@@ -97,7 +97,7 @@ Todas as telas e rotas já prontas estão listadas em [Telas prontas](#telas-pro
 python manage.py seed_demo
 ```
 
-Cria uma empresa, uma cidade, características, os três usuários de teste (tabela abaixo) e, para a W12, um imóvel, um cliente e um contrato de venda com 60 parcelas. Pode rodar de novo sem medo — não duplica nada.
+Cria uma empresa, uma cidade, características, os três usuários de teste (tabela abaixo) e, para a W12, um imóvel, um cliente e um contrato de venda assinado, com 60 parcelas. Pode rodar de novo sem medo — não duplica nada.
 
 ### 7. Rodar os testes
 
@@ -139,6 +139,7 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `/painel/contratos/?tipo=&situacao=` | Lista os contratos | gestor (todos da empresa) e corretor (só os dele) |
 | `/painel/contratos/novo/` e `/painel/contratos/<id>/editar/` | Cadastra e edita o contrato; ao salvar, gera as parcelas (assinado: só observações) | gestor |
 | `/painel/contratos/<id>/` | Dados do contrato e todas as parcelas | gestor e corretor do contrato |
+| `POST /painel/contratos/<id>/assinar/` | Assina o contrato (data da assinatura): o imóvel fica vendido/alugado, com histórico, e sai da vitrine; um só contrato assinado por imóvel | gestor |
 | `/painel/imoveis/` | Lista os imóveis da própria empresa | corretor |
 | `/painel/imoveis/novo/` | Cadastra a parte comum do imóvel | corretor |
 | `/painel/imoveis/<id>/` | Página do imóvel — endereço, fotos e botão de publicar | corretor |
@@ -150,6 +151,7 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `GET/POST /api/proprietarios/?busca=` | Lista (com busca) e cadastra proprietários da própria empresa | app, corretor |
 | `GET/POST /api/clientes/?busca=` e `GET/PUT/PATCH /api/clientes/<id>/` | Clientes da própria empresa (sem exclusão) | app, corretor e gestor |
 | `GET/POST /api/contratos/?tipo=&situacao=` e `GET/PUT/PATCH /api/contratos/<id>/` | Contratos com as parcelas (geradas pelo servidor; sem exclusão) | app — leitura: gestor e corretor do contrato; escrita: gestor |
+| `POST /api/contratos/<id>/assinar/` | Assina o contrato — corpo `{ "data_assinatura": "AAAA-MM-DD" }` | app, gestor |
 | `GET/POST /api/imoveis/` | Lista e cadastra imóveis da própria empresa | app, corretor |
 | `GET/PUT /api/imoveis/<id>/endereco/` | Lê/grava o endereço do imóvel (cidade, CEP, latitude, longitude) | app, corretor |
 | `POST /api/imoveis/<id>/publicar/` | Publica o imóvel — recusa se faltar cidade ou coordenada | app, corretor |

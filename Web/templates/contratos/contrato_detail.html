@@ -47,6 +47,22 @@
     <p class="texto-suave">Cadastrado por {{ contrato.criado_por.nome }} em {{ contrato.criado_em|date:"d/m/Y H:i" }}.</p>
 </div>
 
+{% if eh_gestor and not contrato.assinado %}
+<div class="secao">
+    <h2>Assinatura</h2>
+    <p>
+        O contrato ainda é um <strong>rascunho</strong>. Ao assinar, o imóvel {{ contrato.imovel.codigo }}
+        passa a <strong>{% if contrato.tipo == "VENDA" %}vendido{% else %}alugado{% endif %}</strong>
+        e sai da vitrine. Depois disso, valores e datas não podem mais ser alterados.
+    </p>
+    <form method="post" action="{% url 'contratos:contrato_assinar' contrato.pk %}">
+        {% csrf_token %}
+        {{ assinatura_form.as_p }}
+        <button type="submit">Assinar contrato</button>
+    </form>
+</div>
+{% endif %}
+
 <div class="secao">
     <h2>Parcelas</h2>
     <table>
