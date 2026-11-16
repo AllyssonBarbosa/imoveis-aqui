@@ -1,12 +1,22 @@
+import uuid
 from decimal import Decimal
+from pathlib import Path
 
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.core.validators import MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from core.models import EmpresaOwnedModel
-from core.validators import validar_imagem
+from core.validators import validar_documento, validar_imagem
+
+
+class ImovelQuerySet(models.QuerySet):
+    def na_vitrine(self):
+        """O que a vitrine pública mostra: só disponível E publicado, de empresa ativa (W08)."""
+        return self.filter(
+            publicado=True, situacao=Imovel.Situacao.DISPONIVEL, empresa__ativa=True
+        )
 
 
 class Caracteristica(models.Model):
@@ -33,6 +43,10 @@ class Imovel(EmpresaOwnedModel):
     Nasce como rascunho: dá pra cadastrar sem endereço completo e ir
     montando aos poucos (endereço, fotos). Só pode ser publicado quando
     pode_publicar() for verdadeiro (ver W04, critério 6).
+
+    Situação (disponível, reservado...) e publicação são coisas separadas
+    (W08): um imóvel pode estar disponível e ainda fora da vitrine. A
+    situação só muda por mudar_situacao(), que grava o histórico.
     """
 
     class Finalidade(models.TextChoices):
@@ -44,6 +58,13 @@ class Imovel(EmpresaOwnedModel):
         CASA = "CASA", "Casa"
         TERRENO = "TERRENO", "Terreno"
         APARTAMENTO = "APARTAMENTO", "Apartamento"
+        LOTE = "LOTE", "Lote"
+
+    class Situacao(models.TextChoices):
+        DISPONIVEL = "DISPONIVEL", "Disponível"
+        RESERVADO = "RESERVADO", "Reservado"
+        VENDIDO = "VENDIDO", "Vendido"
+        ALUGADO = "ALUGADO", "Alugado"
 
     codigo = models.CharField(max_length=30)
     titulo = models.CharField(max_length=200)
@@ -65,6 +86,11 @@ class Imovel(EmpresaOwnedModel):
         "core.Endereco", on_delete=models.PROTECT, null=True, blank=True, related_name="imovel"
     )
     publicado = models.BooleanField(default=False)
+    # editable=False: não entra em formulário nenhum — muda só por mudar_situacao()
+    situacao = models.CharField(
+        "situação", max_length=20, choices=Situacao.choices, default=Situacao.DISPONIVEL,
+        editable=False,
+    )
     criado_em = models.DateTimeField(auto_now_add=True)
     atualizado_em = models.DateTimeField(auto_now=True)
 
@@ -114,11 +140,12 @@ class Imovel(EmpresaOwnedModel):
 
     @property
     def detalhes(self):
-        """Dados próprios da natureza (Casa, Terreno ou Apartamento) — None enquanto não preenchidos."""
+        """Dados próprios da natureza (casa, terreno, apartamento ou lote) — None enquanto não preenchidos."""
         relacao = {
             self.Natureza.CASA: "casa",
             self.Natureza.TERRENO: "terreno",
             self.Natureza.APARTAMENTO: "apartamento",
+            self.Natureza.LOTE: "lote",
         }.get(self.natureza)
         if relacao is None:
             return None
@@ -135,21 +162,66 @@ class Imovel(EmpresaOwnedModel):
             return apartamento.predio.endereco if apartamento else None
         return self.endereco
 
-    def pode_publicar(self):
+    objects = ImovelQuerySet.as_manager()
+
+    def pendencias_para_publicar(self):
+        """O que falta no endereço para o imóvel poder ir pra vitrine (lista vazia = pode)."""
+        if self.natureza == self.Natureza.APARTAMENTO and self.detalhes is None:
+            return ["o prédio do apartamento (o endereço vem dele)"]
+
         endereco = self.endereco_do_anuncio
-        return bool(
-            endereco
-            and endereco.latitude is not None
-            and endereco.longitude is not None
-        )
+        if endereco is None:
+            return ["o endereço"]
+
+        obrigatorios = [
+            ("cep", "CEP"), ("logradouro", "logradouro"), ("numero", "número"),
+            ("bairro", "bairro"), ("cidade_id", "cidade"),
+        ]
+        faltando = [rotulo for campo, rotulo in obrigatorios if not getattr(endereco, campo)]
+        if endereco.latitude is None or endereco.longitude is None:
+            faltando.append("coordenadas (latitude e longitude)")
+        return faltando
+
+    def pode_publicar(self):
+        return not self.pendencias_para_publicar()
 
     def publicar(self):
-        if not self.pode_publicar():
-            raise ValidationError(
-                "Imóvel sem cidade ou sem coordenada não pode ser publicado."
-            )
+        pendencias = self.pendencias_para_publicar()
+        if pendencias:
+            if len(pendencias) > 1:
+                lista = ", ".join(pendencias[:-1]) + " e " + pendencias[-1]
+            else:
+                lista = pendencias[0]
+            onde = " (corrija no cadastro do prédio)" if self.natureza == self.Natureza.APARTAMENTO and self.detalhes else ""
+            raise ValidationError(f"Não dá para publicar: falta {lista}{onde}.")
         self.publicado = True
         self.save(update_fields=["publicado"])
+
+    def despublicar(self):
+        self.publicado = False
+        self.save(update_fields=["publicado"])
+
+    def mudar_situacao(self, nova, usuario, observacao=""):
+        """Única porta de mudança de situação — sempre grava quem, quando, de/para e a observação."""
+        if nova not in self.Situacao.values:
+            raise ValidationError("Situação inválida.")
+        if nova == self.situacao:
+            raise ValidationError(f"O imóvel já está {self.get_situacao_display().lower()}.")
+
+        with transaction.atomic():
+            historico = HistoricoSituacao.objects.create(
+                imovel=self, situacao_anterior=self.situacao, situacao_nova=nova,
+                alterado_por=usuario, observacao=observacao,
+            )
+            self.situacao = nova
+            self.save(update_fields=["situacao"])
+        return historico
+
+    @property
+    def situacao_desde(self):
+        """Desde quando o imóvel está na situação atual (sem histórico: desde o cadastro)."""
+        ultima = self.historico_situacao.order_by("-alterado_em", "-id").first()
+        return ultima.alterado_em if ultima else self.criado_em
 
 
 class FotoImovel(models.Model):
@@ -434,3 +506,202 @@ class Apartamento(models.Model):
 
         if self.suites is not None and self.quartos is not None and self.suites > self.quartos:
             raise ValidationError({"suites": "O número de suítes não pode passar o de quartos."})
+
+
+class Loteamento(EmpresaOwnedModel):
+    """Loteamento: cadastrado uma vez, com a infraestrutura que vale pra todos os lotes (W07).
+
+    Três níveis: Loteamento → Quadra → Lote. O lote é o imóvel anunciado;
+    infraestrutura e lazer ficam só aqui e o anúncio do lote lê daqui.
+    """
+
+    nome = models.CharField(max_length=150)
+    cidade = models.ForeignKey(
+        "localizacao.Cidade", on_delete=models.PROTECT, related_name="loteamentos"
+    )
+    incorporadora = models.CharField(max_length=150)
+    asfalto = models.BooleanField(default=False)
+    agua = models.BooleanField("água", default=False)
+    energia = models.BooleanField(default=False)
+    esgoto = models.BooleanField(default=False)
+    iluminacao = models.BooleanField("iluminação pública", default=False)
+    areas_de_lazer = models.TextField(
+        "áreas de lazer", blank=True, help_text="Ex.: praça, quadra poliesportiva, pista de caminhada."
+    )
+
+    class Meta:
+        verbose_name = "loteamento"
+        verbose_name_plural = "loteamentos"
+        ordering = ["nome"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["empresa", "nome"],
+                name="loteamento_nome_unico_por_empresa",
+                violation_error_message="Já existe um loteamento com esse nome nesta empresa.",
+            )
+        ]
+
+    def __str__(self):
+        return self.nome
+
+
+class Quadra(models.Model):
+    """Quadra do loteamento, identificada por letra ou número ("A", "B", "12")."""
+
+    loteamento = models.ForeignKey(Loteamento, on_delete=models.CASCADE, related_name="quadras")
+    identificacao = models.CharField("identificação", max_length=20)
+
+    class Meta:
+        verbose_name = "quadra"
+        verbose_name_plural = "quadras"
+        ordering = ["loteamento", "identificacao"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["loteamento", "identificacao"],
+                name="quadra_unica_por_loteamento",
+                violation_error_message="Já existe uma quadra com essa identificação neste loteamento.",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.loteamento} — Quadra {self.identificacao}"
+
+    def resumo_lotes(self):
+        """Quantos lotes a quadra tem, quantos estão disponíveis e quantos foram vendidos."""
+        total = self.lotes.count()
+        vendidos = sum(1 for lote in self.lotes.all() if lote.vendido)
+        return {"total": total, "disponiveis": total - vendidos, "vendidos": vendidos}
+
+
+class Lote(models.Model):
+    """O lote é o imóvel anunciado; quadra e loteamento vêm pela ligação (W07).
+
+    O preço é o preço de venda do Imovel — não se repete aqui.
+    """
+
+    imovel = models.OneToOneField(Imovel, on_delete=models.CASCADE, related_name="lote")
+    quadra = models.ForeignKey(Quadra, on_delete=models.PROTECT, related_name="lotes")
+    numero = models.CharField("número", max_length=10)
+    area = models.DecimalField("área (m²)", max_digits=10, decimal_places=2, validators=_area_positiva())
+    frente = models.DecimalField("frente (m)", max_digits=8, decimal_places=2, validators=_medida_positiva())
+    fundo = models.DecimalField("fundo (m)", max_digits=8, decimal_places=2, validators=_medida_positiva())
+    entrada_minima = models.DecimalField(
+        "entrada mínima", max_digits=12, decimal_places=2, null=True, blank=True,
+        validators=[MinValueValidator(0)],
+    )
+    parcelas_maximas = models.PositiveSmallIntegerField(
+        "número máximo de parcelas", null=True, blank=True, validators=[MinValueValidator(1)]
+    )
+    condicoes_parcelamento = models.TextField(
+        "outras condições de parcelamento", blank=True, help_text="Ex.: correção anual pelo IPCA."
+    )
+
+    class Meta:
+        verbose_name = "lote"
+        verbose_name_plural = "lotes"
+        ordering = ["quadra", "numero"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["quadra", "numero"],
+                name="lote_numero_unico_por_quadra",
+                violation_error_message="Já existe um lote com esse número nesta quadra.",
+            )
+        ]
+
+    def __str__(self):
+        return f"Lote {self.numero} — {self.quadra}"
+
+    @property
+    def vendido(self):
+        # vem da situação do imóvel (W08); os contratos, quando vierem, só mudam a situação
+        return self.imovel.situacao == Imovel.Situacao.VENDIDO
+
+    def clean(self):
+        super().clean()
+
+        if self.imovel_id and self.imovel.natureza != Imovel.Natureza.LOTE:
+            raise ValidationError("Este imóvel não é um lote.")
+
+        if self.quadra_id and self.imovel_id:
+            if self.quadra.loteamento.empresa_id != self.imovel.empresa_id:
+                raise ValidationError({"quadra": "A quadra precisa ser de um loteamento da mesma empresa."})
+
+        if self.entrada_minima is not None and self.imovel_id:
+            preco = self.imovel.preco_venda
+            if not preco:
+                raise ValidationError({
+                    "entrada_minima": "Parcelamento só vale para lote à venda — informe o preço de venda no imóvel."
+                })
+            if self.entrada_minima > preco:
+                raise ValidationError({
+                    "entrada_minima": (
+                        f"A entrada mínima (R$ {self.entrada_minima}) não pode passar "
+                        f"o preço do lote (R$ {preco})."
+                    )
+                })
+
+
+class HistoricoSituacao(models.Model):
+    """Cada mudança de situação do imóvel: quem, quando, de que para que e por quê (W08).
+
+    É daqui que sai "desde quando este imóvel está reservado".
+    """
+
+    imovel = models.ForeignKey(Imovel, on_delete=models.CASCADE, related_name="historico_situacao")
+    situacao_anterior = models.CharField(max_length=20, choices=Imovel.Situacao.choices)
+    situacao_nova = models.CharField(max_length=20, choices=Imovel.Situacao.choices)
+    alterado_por = models.ForeignKey(
+        "contas.Usuario", on_delete=models.PROTECT, related_name="mudancas_de_situacao"
+    )
+    alterado_em = models.DateTimeField(auto_now_add=True)
+    observacao = models.TextField("observação", blank=True)
+
+    class Meta:
+        verbose_name = "mudança de situação"
+        verbose_name_plural = "histórico de situação"
+        ordering = ["-alterado_em", "-id"]
+
+    def __str__(self):
+        return (
+            f"{self.imovel}: {self.get_situacao_anterior_display()} → "
+            f"{self.get_situacao_nova_display()}"
+        )
+
+
+def _caminho_documento(instancia, nome_original):
+    # nome aleatório: o endereço do arquivo não dá pra adivinhar a partir do imóvel
+    return f"imoveis/documentos/{uuid.uuid4().hex}{Path(nome_original).suffix.lower()}"
+
+
+class DocumentoImovel(models.Model):
+    """Documento anexado pelo gestor: matrícula, carnê do IPTU ou autorização do proprietário (W08).
+
+    Nunca vai pra vitrine. O download passa por uma rota que confere a empresa.
+    """
+
+    class Tipo(models.TextChoices):
+        MATRICULA = "MATRICULA", "Matrícula"
+        IPTU = "IPTU", "Carnê do IPTU"
+        AUTORIZACAO = "AUTORIZACAO", "Autorização do proprietário"
+
+    imovel = models.ForeignKey(Imovel, on_delete=models.CASCADE, related_name="documentos")
+    tipo = models.CharField(max_length=20, choices=Tipo.choices)
+    arquivo = models.FileField(upload_to=_caminho_documento, validators=[validar_documento])
+    data_documento = models.DateField("data do documento")
+    enviado_por = models.ForeignKey(
+        "contas.Usuario", on_delete=models.PROTECT, related_name="documentos_enviados"
+    )
+    enviado_em = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "documento do imóvel"
+        verbose_name_plural = "documentos do imóvel"
+        ordering = ["tipo", "-data_documento", "-id"]
+
+    def __str__(self):
+        return f"{self.get_tipo_display()} de {self.imovel}"
+
+    def clean(self):
+        super().clean()
+        if self.data_documento and self.data_documento > timezone.localdate():
+            raise ValidationError({"data_documento": "A data do documento não pode estar no futuro."})

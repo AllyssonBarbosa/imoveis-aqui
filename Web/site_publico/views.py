@@ -111,7 +111,7 @@ def imovel(request, pk):
     objeto = get_object_or_404(
         imoveis_da_vitrine().select_related(
             "empresa", "endereco__cidade", "corretor_responsavel__empresa", "casa", "terreno",
-            "apartamento__predio__endereco__cidade",
+            "apartamento__predio__endereco__cidade", "lote__quadra__loteamento",
         ).prefetch_related("fotos", "caracteristicas"),
         pk=pk,
     )

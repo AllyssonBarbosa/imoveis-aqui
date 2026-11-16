@@ -2,7 +2,8 @@
 
 Fica aqui, no Django, e não no app — o app só mostra o que a API devolve.
 A vitrine não tem usuário logado, então não filtra pela empresa do usuário:
-mostra imóveis de todas as empresas, mas só os publicados de empresa ativa.
+mostra imóveis de todas as empresas, mas só os disponíveis e publicados de
+empresa ativa (Imovel.objects.na_vitrine(), regra da W08).
 """
 
 from decimal import Decimal, InvalidOperation
@@ -17,6 +18,7 @@ from .models import Imovel
 APARTAMENTO = Imovel.Natureza.APARTAMENTO
 CASA = Imovel.Natureza.CASA
 TERRENO = Imovel.Natureza.TERRENO
+LOTE = Imovel.Natureza.LOTE
 
 IMOVEIS_POR_PAGINA = 20
 
@@ -54,11 +56,11 @@ def imoveis_da_vitrine():
     Anotações (colunas calculadas na consulta):
     - cidade_anuncio / bairro_anuncio: do endereço do anúncio (prédio, se apartamento)
     - area_anuncio: a área principal de cada natureza — construída (casa),
-      privativa (apartamento) ou total (terreno)
+      privativa (apartamento), total (terreno) ou a do lote
     - quartos / suites / vagas: da casa ou do apartamento (terreno fica sem)
     """
     return (
-        Imovel.objects.filter(publicado=True, empresa__ativa=True)
+        Imovel.objects.na_vitrine()
         .annotate(
             cidade_anuncio=_do_anuncio("cidade_id", "cidade_id"),
             bairro_anuncio=_do_anuncio("bairro", "bairro"),
@@ -66,6 +68,7 @@ def imoveis_da_vitrine():
                 When(natureza=CASA, then=F("casa__area_construida")),
                 When(natureza=APARTAMENTO, then=F("apartamento__area_privativa")),
                 When(natureza=TERRENO, then=F("terreno__area_total")),
+                When(natureza=LOTE, then=F("lote__area")),
             ),
             quartos_anuncio=Case(
                 When(natureza=CASA, then=F("casa__quartos")),
