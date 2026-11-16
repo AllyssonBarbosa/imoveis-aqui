@@ -1,26 +1,68 @@
 import io
 import shutil
 import tempfile
+from datetime import date
 from decimal import Decimal
 from unittest import mock
 
+from django.conf import settings
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
 from django.db.utils import IntegrityError
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from PIL import Image
 from rest_framework import status
+from rest_framework.settings import api_settings
 from rest_framework.test import APITestCase
 
 from contas.models import Usuario
 from core.models import Endereco
+from core.throttles import ThrottleVitrinePublica
 from empresas.models import Empresa
+from localizacao.api.views import CidadeAtendidaAPIView
 from localizacao.models import Cidade
 from proprietarios.models import Proprietario
 
-from .api.views import PaginacaoVitrine
-from .models import Apartamento, Caracteristica, Casa, FotoImovel, Imovel, Predio, Terreno
+from .api.views import (
+    BairrosDaCidadeAPIView,
+    CaracteristicasPublicasAPIView,
+    ImovelVitrineDetalheAPIView,
+    PaginacaoVitrine,
+    VitrineCidadeAPIView,
+)
+from .models import (
+    Apartamento,
+    Caracteristica,
+    Casa,
+    DocumentoImovel,
+    FotoImovel,
+    Imovel,
+    Lote,
+    Loteamento,
+    Predio,
+    Quadra,
+    Terreno,
+)
+
+
+# Taxa fixa da suíte (WR-09): a real vem de VITRINE_TAXA_ANONIMA no `.env` de quem roda, e um valor baixo
+# ali (é para isso que a variável existe) faria testes com dezenas de requisições receberem 429.
+TAXA_ALTA_NOS_TESTES = "100000/min"
+
+
+def fixar_taxa_alta(teste):
+    """Pina uma taxa alta no throttle da vitrine durante o teste, para a suíte não depender do ambiente.
+
+    Os testes de limite sobrescrevem com a taxa explícita deles (`mock.patch.object` aninhado) e, ao sair,
+    voltam para esta. A leitura do settings segue testável por `get_rate()`, que ignora este patch.
+    """
+    patcher = mock.patch.object(ThrottleVitrinePublica, "rate", TAXA_ALTA_NOS_TESTES, create=True)
+    patcher.start()
+    teste.addCleanup(patcher.stop)
 
 
 def criar_empresa(nome="Imobiliária Teste", cnpj="74.286.058/0001-80"):
@@ -177,7 +219,8 @@ class ImovelModelTests(TestCase):
     def test_publica_com_endereco_e_coordenadas_completos(self):
         cidade = Cidade.objects.create(nome="São Paulo", uf="SP")
         endereco = Endereco.objects.create(
-            logradouro="Rua A", cidade=cidade, latitude="-23.55", longitude="-46.63"
+            cep="01000-000", logradouro="Rua A", numero="10", bairro="Centro", cidade=cidade,
+            latitude="-23.55", longitude="-46.63",
         )
         imovel = criar_imovel(self.empresa, self.corretor, self.proprietario, endereco=endereco)
         self.assertTrue(imovel.pode_publicar())
@@ -266,14 +309,15 @@ class PainelImovelTests(TestCase):
         self.assertIsNotNone(imovel.endereco)
         self.assertIsNotNone(imovel.endereco.latitude)
 
-        response = self.client.post(reverse("imoveis:imovel_publicar", args=[imovel.pk]))
+        self.client.force_login(criar_gestor(self.empresa))
+        self.client.post(reverse("imoveis:gestao_imovel_publicar", args=[imovel.pk]))
         imovel.refresh_from_db()
         self.assertTrue(imovel.publicado)
 
     def test_publicar_falha_sem_endereco(self):
         imovel = criar_imovel(self.empresa, self.corretor, self.proprietario)
-        self.client.force_login(self.corretor)
-        self.client.post(reverse("imoveis:imovel_publicar", args=[imovel.pk]))
+        self.client.force_login(criar_gestor(self.empresa))
+        self.client.post(reverse("imoveis:gestao_imovel_publicar", args=[imovel.pk]))
         imovel.refresh_from_db()
         self.assertFalse(imovel.publicado)
 
@@ -350,19 +394,21 @@ class ImovelApiTests(APITestCase):
 
         url_endereco = reverse("imovel-endereco", args=[imovel.pk])
         response = self.client.put(url_endereco, {
-            "logradouro": "Rua A", "cidade": self.cidade.pk, "latitude": "-23.55", "longitude": "-46.63",
+            "cep": "01000-000", "logradouro": "Rua A", "numero": "10", "bairro": "Centro",
+            "cidade": self.cidade.pk, "latitude": "-23.55", "longitude": "-46.63",
         })
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
 
-        url_publicar = reverse("imovel-publicar", args=[imovel.pk])
+        self.client.force_authenticate(criar_gestor(self.empresa))
+        url_publicar = reverse("gestao-imovel-publicar", args=[imovel.pk])
         response = self.client.post(url_publicar)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(response.data["publicado"])
 
     def test_publicar_sem_endereco_e_recusado(self):
         imovel = criar_imovel(self.empresa, self.corretor, self.proprietario)
-        self.client.force_authenticate(self.corretor)
-        response = self.client.post(reverse("imovel-publicar", args=[imovel.pk]))
+        self.client.force_authenticate(criar_gestor(self.empresa))
+        response = self.client.post(reverse("gestao-imovel-publicar", args=[imovel.pk]))
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_upload_de_varias_fotos_de_uma_vez(self):
@@ -633,7 +679,7 @@ class ApiCasaTerrenoTests(APITestCase):
 def criar_predio(empresa, nome="Edifício Aurora", cidade=None, **extra):
     cidade = cidade or Cidade.objects.get_or_create(nome="São Paulo", uf="SP")[0]
     endereco = Endereco.objects.create(
-        logradouro="Av. Paulista", numero="1000", cidade=cidade,
+        cep="01310-100", logradouro="Av. Paulista", numero="1000", bairro="Bela Vista", cidade=cidade,
         latitude="-23.56", longitude="-46.65",
     )
     dados = dict(
@@ -1014,6 +1060,10 @@ class VitrineBase(APITestCase):
         super().tearDownClass()
 
     def setUp(self):
+        # o limite de taxa guarda o histórico no cache; cada teste começa do zero e com taxa alta fixa,
+        # então a suíte não depende da velocidade da máquina nem do VITRINE_TAXA_ANONIMA do `.env`
+        cache.clear()
+        fixar_taxa_alta(self)
         self.sp = Cidade.objects.create(nome="São Paulo", uf="SP")
         self.campinas = Cidade.objects.create(nome="Campinas", uf="SP")
         self.empresa = criar_empresa()
@@ -1127,6 +1177,75 @@ class VitrineCidadesTests(VitrineBase):
         self.assertNotIn(santos.pk, [c["id"] for c in response.data])
 
 
+class VitrineLimiteDeTaxaTests(VitrineBase):
+    """WR-02: limite anônimo por IP nas rotas públicas da vitrine (balde único, 429)."""
+
+    def _rotas_publicas(self):
+        return [
+            reverse("publico-cidades"),
+            reverse("publico-bairros-cidade", args=[self.sp.pk]),
+            reverse("publico-caracteristicas"),
+            reverse("publico-imovel", args=[self.casa.pk]),
+        ]
+
+    def test_visitante_anonimo_passa_do_limite_e_recebe_429(self):
+        with mock.patch.object(ThrottleVitrinePublica, "rate", "3/min", create=True):
+            for _ in range(3):
+                self.assertEqual(self.buscar().status_code, status.HTTP_200_OK)
+            response = self.buscar()
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertIn("Retry-After", response)
+        self.assertIn("detail", response.data)
+
+    def test_taxa_padrao_vem_do_settings(self):
+        # `get_rate()` lê o settings e ignora o patch de taxa alta do setUp (que troca só `.rate`)
+        esperada = settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["vitrine_publica"]
+        self.assertEqual(ThrottleVitrinePublica().get_rate(), esperada)
+        self.assertEqual(ThrottleVitrinePublica.scope, "vitrine_publica")
+
+    def test_taxa_fixa_da_suite_nao_depende_do_ambiente(self):
+        self.assertEqual(ThrottleVitrinePublica().rate, TAXA_ALTA_NOS_TESTES)
+
+    def test_todas_as_rotas_publicas_da_vitrine_tem_o_limite(self):
+        for view in (
+            VitrineCidadeAPIView, BairrosDaCidadeAPIView, CaracteristicasPublicasAPIView,
+            ImovelVitrineDetalheAPIView, CidadeAtendidaAPIView,
+        ):
+            with self.subTest(view=view.__name__):
+                self.assertEqual(view.throttle_classes, [ThrottleVitrinePublica])
+
+    def test_as_rotas_publicas_dividem_o_mesmo_balde(self):
+        with mock.patch.object(ThrottleVitrinePublica, "rate", "4/min", create=True):
+            for url in self._rotas_publicas():
+                self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK, url)
+            response = self.buscar()
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_x_forwarded_for_forjado_nao_reinicia_a_contagem(self):
+        configuracao = {**settings.REST_FRAMEWORK, "NUM_PROXIES": 0}
+        with override_settings(REST_FRAMEWORK=configuracao), mock.patch.object(
+            ThrottleVitrinePublica, "rate", "2/min", create=True
+        ):
+            respostas = [
+                self.client.get(
+                    reverse("publico-cidades"), HTTP_X_FORWARDED_FOR=f"10.0.0.{n}"
+                ).status_code
+                for n in (1, 2, 3)
+            ]
+        self.assertEqual(
+            respostas,
+            [status.HTTP_200_OK, status.HTTP_200_OK, status.HTTP_429_TOO_MANY_REQUESTS],
+        )
+
+    def test_api_autenticada_do_painel_nao_tem_limite(self):
+        self.assertEqual(list(api_settings.DEFAULT_THROTTLE_CLASSES), [])
+        self.client.force_authenticate(self.corretor)
+        with mock.patch.object(ThrottleVitrinePublica, "rate", "1/min", create=True):
+            for _ in range(3):
+                response = self.client.get(reverse("imovel-list"))
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
 class VitrineBuscaTests(VitrineBase):
     """Critérios 2, 3 e 4: busca dentro da cidade, filtros, ordenação e paginação."""
 
@@ -1194,12 +1313,210 @@ class VitrineBuscaTests(VitrineBase):
             self.ids(self.buscar(caracteristicas=f"{self.portao.pk},{self.ar.pk}")), [self.casa.pk]
         )
 
+    # --- características: teto de ids, formato ASCII e uma só subconsulta (CR-01, D-13) ---
+
+    def _ids_inexistentes(self, quantidade):
+        # ids bem acima dos dois criados no setUp; ninguém tem essas características
+        return [str(900000 + n) for n in range(quantidade)]
+
+    def test_caracteristicas_demais_da_400(self):
+        # 21 ids distintos: 400 antes de qualquer consulta
+        ids = [str(self.portao.pk), str(self.ar.pk)] + self._ids_inexistentes(19)
+        response = self.buscar(caracteristicas=",".join(ids))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["caracteristicas"], "Escolha no máximo 20 características.")
+        # exatamente 20: passa (e a lista fica vazia, porque ninguém tem as 20)
+        ids = [str(self.portao.pk), str(self.ar.pk)] + self._ids_inexistentes(18)
+        response = self.buscar(caracteristicas=",".join(ids))
+        self.assertEqual(self.ids(response), [])
+        # o 400 por tamanho não chega ao banco
+        ids = ",".join(self._ids_inexistentes(21))
+        with CaptureQueriesContext(connection) as consultas:
+            self.buscar(caracteristicas=ids)
+        self.assertFalse(
+            [c for c in consultas.captured_queries if "imoveis_imovel" in c["sql"]],
+            "21 ids deveriam ser recusados antes de consultar os imóveis",
+        )
+
+    def test_id_de_caracteristica_fora_do_formato_da_400(self):
+        portao = self.portao.pk
+        valores = ["0", "-1", "1_0", "٣", "1.0", "abc", f"{portao},x", f"{portao}\x00"]
+        # WR-07: dígitos demais nunca chegam ao `int()` nem ao banco (antes: ValueError/OverflowError, 500)
+        valores += ["0" * 5000, "9" * 5000, "9" * 30, "0" * 19, f"{portao},{'9' * 30}"]
+        for valor in valores:
+            with self.subTest(valor=valor):
+                response = self.buscar(caracteristicas=valor)
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertEqual(
+                    response.data["caracteristicas"], "Informe os ids separados por vírgula."
+                )
+
+    def test_id_de_caracteristica_comum_continua_funcionando(self):
+        # o teto de 18 dígitos não atrapalha ids normais, nem zeros à esquerda dentro do teto
+        portao = self.portao.pk
+        for valor in (f"{portao}", f"{portao:05d}", f" {portao} "):
+            with self.subTest(valor=valor):
+                response = self.buscar(caracteristicas=valor)
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertCountEqual(self.ids(response), [self.casa.pk, self.sobrado.pk])
+        # 18 noves é o maior id aceito: passa pelo formato e simplesmente não acha nada
+        response = self.buscar(caracteristicas="9" * 18)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self.ids(response), [])
+
+    def test_ids_repetidos_e_vazios_sao_ignorados(self):
+        portao = self.portao.pk
+        esperado = [self.casa.pk, self.sobrado.pk]
+        for valor in (f"{portao}", f"{portao},{portao},", f",{portao},,"):
+            with self.subTest(valor=valor):
+                self.assertCountEqual(self.ids(self.buscar(caracteristicas=valor)), esperado)
+
+    def test_caracteristica_inexistente_junto_de_existente_nao_traz_nada(self):
+        response = self.buscar(caracteristicas=f"{self.portao.pk},999999")
+        self.assertEqual(self.ids(response), [])
+        self.assertEqual(response.data["count"], 0)
+
+    def test_filtro_caracteristicas_usa_uma_so_subconsulta_qualquer_que_seja_a_quantidade(self):
+        tabela = Imovel.caracteristicas.through._meta.db_table
+
+        def consultas_da_requisicao(ids):
+            with CaptureQueriesContext(connection) as consultas:
+                response = self.buscar(caracteristicas=",".join(ids))
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+            return [c["sql"] for c in consultas.captured_queries]
+
+        def ocorrencias_por_consulta(consultas):
+            # a lista pode nem rodar quando o count dá 0 (20 ids sem resultado): compara a forma de
+            # cada consulta (quantas vezes ela cita a tabela), não o total da requisição
+            return {consulta.count(tabela) for consulta in consultas if tabela in consulta}
+
+        dois = [str(self.portao.pk), str(self.ar.pk)]
+        vinte = dois + self._ids_inexistentes(18)
+        consultas_dois = consultas_da_requisicao(dois)
+        consultas_vinte = consultas_da_requisicao(vinte)
+        self.assertTrue(ocorrencias_por_consulta(consultas_dois))
+        self.assertEqual(
+            ocorrencias_por_consulta(consultas_dois), ocorrencias_por_consulta(consultas_vinte)
+        )
+        # a tabela M2M aparece uma vez por consulta: a subconsulta agregada, nunca um JOIN por id
+        self.assertEqual(ocorrencias_por_consulta(consultas_vinte), {1})
+        for sql in consultas_dois + consultas_vinte:
+            self.assertNotIn(f'JOIN "{tabela}"', sql)
+
+    def test_paginacao_com_filtro_de_caracteristicas_nao_duplica_linha(self):
+        with mock.patch.object(PaginacaoVitrine, "page_size", 1):
+            pagina1 = self.buscar(caracteristicas=f"{self.portao.pk}")
+            pagina2 = self.buscar(caracteristicas=f"{self.portao.pk}", page=2)
+        self.assertEqual(pagina1.data["count"], 2)
+        self.assertEqual(len(pagina1.data["results"]), 1)
+        self.assertEqual(len(pagina2.data["results"]), 1)
+        self.assertNotEqual(self.ids(pagina1), self.ids(pagina2))
+
     def test_filtro_invalido_da_400_com_mensagem(self):
         response = self.buscar(preco_min="barato")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("preco_min", response.data)
         response = self.buscar(ordenar="aleatorio")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # --- entrada hostil (CR-02, WR-01, tetos do WR-02): sempre 400 {campo: mensagem}, nunca 500 ---
+
+    def test_numero_nao_finito_ou_fora_do_formato_da_400(self):
+        campos = ["preco_min", "preco_max", "area_min", "area_max"]
+        valores = [
+            "NaN", "sNaN", "Infinity", "-Infinity", "inf", "1e400", "1e3", "1_0",
+            " 5", "5 ", "٣",  # dígito arábico-índico
+        ]
+        for campo in campos:
+            for valor in valores:
+                with self.subTest(campo=campo, valor=valor):
+                    response = self.buscar(**{campo: valor})
+                    self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                    self.assertEqual(response.data[campo], "Informe um número válido.")
+
+    def test_numero_inteiro_fora_do_formato_da_400(self):
+        valores = ["NaN", "1.5", "1_0", "٣", "99999999999999999999"]
+        for campo in ["quartos", "suites", "vagas"]:
+            for valor in valores:
+                with self.subTest(campo=campo, valor=valor):
+                    response = self.buscar(**{campo: valor})
+                    self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                    self.assertIn(campo, response.data)
+
+    def test_numero_negativo_da_400_com_mensagem(self):
+        for campo, valor in [("preco_min", "-5"), ("quartos", "-1")]:
+            with self.subTest(campo=campo, valor=valor):
+                response = self.buscar(**{campo: valor})
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertEqual(response.data[campo], "O valor não pode ser negativo.")
+
+    def test_numero_acima_do_teto_da_400_e_no_teto_passa(self):
+        self.assertEqual(self.buscar(preco_max="9999999999.99").status_code, status.HTTP_200_OK)
+        self.assertEqual(self.buscar(quartos="32767").status_code, status.HTTP_200_OK)
+        for campo, valor in [("preco_max", "10000000000"), ("quartos", "32768")]:
+            with self.subTest(campo=campo, valor=valor):
+                response = self.buscar(**{campo: valor})
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertEqual(response.data[campo], "O valor passa do máximo permitido.")
+
+    def test_area_tem_o_teto_da_coluna(self):
+        # a coluna de área é max_digits=10 (99999999.99); o teto do preço (12 dígitos) não vale para ela
+        self.assertEqual(self.buscar(area_max="99999999.99").status_code, status.HTTP_200_OK)
+        self.assertEqual(self.buscar(area_min="99999999.99").status_code, status.HTTP_200_OK)
+        for campo, valor in [
+            ("area_min", "100000000"),
+            ("area_max", "100000000"),
+            ("area_max", "9999999999.99"),
+        ]:
+            with self.subTest(campo=campo, valor=valor):
+                response = self.buscar(**{campo: valor})
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertEqual(response.data[campo], "O valor passa do máximo permitido.")
+
+    def test_decimal_com_fracao_continua_aceito(self):
+        # a casa tem 150 m²; o terreno, 360 m²
+        self.assertEqual(self.ids(self.buscar(area_min="150.5")), [self.terreno.pk])
+        self.assertCountEqual(
+            self.ids(self.buscar(preco_min="300000")), [self.casa.pk, self.apto.pk]
+        )
+
+    def test_byte_nul_em_busca_e_bairro_da_400(self):
+        response = self.buscar(busca="a\x00b")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["busca"], "O texto tem um caractere inválido.")
+        response = self.buscar(bairro="Moema,a\x00b")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["bairro"], "O texto tem um caractere inválido.")
+
+    def test_byte_nul_em_qualquer_parametro_nunca_da_500(self):
+        for campo in [
+            "busca", "bairro", "natureza", "finalidade", "ordenar",
+            "preco_min", "area_max", "quartos", "caracteristicas",
+        ]:
+            with self.subTest(campo=campo):
+                response = self.buscar(**{campo: "a\x00b"})
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertIn(campo, response.data)
+
+    def test_busca_acima_do_teto_da_400(self):
+        self.assertEqual(self.buscar(busca="a" * 200).status_code, status.HTTP_200_OK)
+        response = self.buscar(busca="a" * 201)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["busca"], "Use no máximo 200 caracteres.")
+        # o teto vale depois do trim, e busca só de espaços continua ignorada
+        self.assertEqual(self.buscar(busca=" " + "a" * 200 + " ").status_code, status.HTTP_200_OK)
+        self.assertEqual(len(self.ids(self.buscar(busca="   "))), 4)
+
+    def test_bairro_com_itens_demais_ou_longo_demais_da_400(self):
+        vinte = ",".join(f"Bairro {n}" for n in range(20))
+        self.assertEqual(self.buscar(bairro=vinte).status_code, status.HTTP_200_OK)
+        response = self.buscar(bairro=vinte + ",Bairro 20")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["bairro"], "Escolha no máximo 20 bairros.")
+        self.assertEqual(self.buscar(bairro="b" * 100).status_code, status.HTTP_200_OK)
+        response = self.buscar(bairro="b" * 101)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["bairro"], "Cada bairro tem no máximo 100 caracteres.")
 
     def test_ordenacao_por_preco(self):
         self.assertEqual(
@@ -1257,7 +1574,8 @@ class VitrineDetalheTests(VitrineBase):
         dados = response.data
 
         self.assertEqual(len(dados["fotos"]), 2)
-        self.assertEqual([f["capa"] for f in dados["fotos"]], [False, True])
+        # a capa abre a galeria (regra da API, o app não reordena)
+        self.assertEqual([f["capa"] for f in dados["fotos"]], [True, False])
 
         self.assertEqual(dados["casa"]["quartos"], 3)
         self.assertEqual(Decimal(dados["casa"]["area_livre"]), Decimal("150.00"))
@@ -1322,17 +1640,22 @@ class VitrineSemTokenESemVazamentoTests(VitrineBase):
         "proprietario", "documento", "nome_razao_social", "codigo", "empresa", "publicado",
         "pode_publicar", "atualizado_em", "criado_em", "complemento", "valor_condominio_base",
         "unidades_por_andar", "imovel",
+        "vendido", "situacao", "documentos", "historico",
     }
 
     VALORES_PROIBIDOS = [
         "Dona Secreta", "17662633055", "176.626.330-55", "CASA-INTERNO", "APTO-INTERNO",
-        "TERRENO-INTERNO", "Casa 2", "800.00",
+        "TERRENO-INTERNO", "LOTE-INTERNO", "Casa 2", "800.00",
     ]
+
+    def setUp(self):
+        super().setUp()
+        self.imovel_lote, _ = publicar_lote_da_vitrine(self)
 
     def respostas(self):
         yield self.client.get(reverse("publico-cidades"))
         yield self.buscar()
-        for imovel in (self.casa, self.apto, self.terreno):
+        for imovel in (self.casa, self.apto, self.terreno, self.imovel_lote):
             yield self.client.get(reverse("publico-imovel", args=[imovel.pk]))
 
     def test_nao_exige_token_nem_se_atrapalha_com_token_invalido(self):
@@ -1359,3 +1682,1441 @@ class VitrineSemTokenESemVazamentoTests(VitrineBase):
             self.client.patch(url, {"titulo": "x"}).status_code, status.HTTP_405_METHOD_NOT_ALLOWED
         )
         self.assertEqual(self.client.delete(url).status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+
+class VitrineSituacaoTests(VitrineBase):
+    """D-04: reservado, vendido e alugado saem da vitrine — lista, detalhe e cidades atendidas."""
+
+    def setUp(self):
+        super().setUp()
+        self.gestor = criar_gestor(self.empresa)
+
+    def _mudar(self, imovel, situacao):
+        imovel.mudar_situacao(situacao, self.gestor)
+
+    def test_reservado_vendido_e_alugado_somem_da_lista_da_cidade(self):
+        self._mudar(self.casa, Imovel.Situacao.RESERVADO)
+        self._mudar(self.sobrado, Imovel.Situacao.VENDIDO)
+        self._mudar(self.terreno, Imovel.Situacao.ALUGADO)
+
+        ids = self.ids(self.buscar())
+
+        self.assertCountEqual(ids, [self.apto.pk])
+        for fora in (self.casa, self.sobrado, self.terreno):
+            self.assertNotIn(fora.pk, ids)
+
+    def test_detalhe_fora_da_vitrine_responde_o_mesmo_404_de_id_inexistente(self):
+        inexistente = self.client.get(reverse("publico-imovel", args=[999999]))
+        self.assertEqual(inexistente.status_code, status.HTTP_404_NOT_FOUND)
+
+        casos = [
+            (self.casa, Imovel.Situacao.RESERVADO),
+            (self.sobrado, Imovel.Situacao.VENDIDO),
+            (self.terreno, Imovel.Situacao.ALUGADO),
+        ]
+        for imovel, situacao in casos:
+            with self.subTest(situacao=situacao):
+                self._mudar(imovel, situacao)
+                response = self.client.get(reverse("publico-imovel", args=[imovel.pk]))
+                self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+                self.assertEqual(response.json(), inexistente.json())
+
+    def test_cidade_sem_imovel_na_vitrine_some_das_cidades_atendidas(self):
+        cidades = lambda: [c["id"] for c in self.client.get(reverse("publico-cidades")).data]  # noqa: E731
+        self.assertIn(self.campinas.pk, cidades())
+
+        self._mudar(self.em_campinas, Imovel.Situacao.RESERVADO)
+        self.assertNotIn(self.campinas.pk, cidades())
+        self.assertIn(self.sp.pk, cidades())
+
+        self._mudar(self.em_campinas, Imovel.Situacao.DISPONIVEL)
+        self.assertIn(self.campinas.pk, cidades())
+
+    def test_mudanca_entre_a_lista_e_o_detalhe_vale_na_leitura_seguinte(self):
+        """API-07: a regra é avaliada a cada requisição, sem cache nem estado parcial."""
+        url = reverse("publico-imovel", args=[self.casa.pk])
+        self.assertIn(self.casa.pk, self.ids(self.buscar()))
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
+
+        self._mudar(self.casa, Imovel.Situacao.VENDIDO)  # alguém muda a situação no meio
+
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+        self.assertNotIn(self.casa.pk, self.ids(self.buscar()))
+
+
+def criar_loteamento(empresa, nome="Jardim das Flores", **extra):
+    cidade = Cidade.objects.get_or_create(nome="São Paulo", uf="SP")[0]
+    dados = dict(
+        empresa=empresa, nome=nome, cidade=cidade, incorporadora="Incorporadora Alfa",
+        asfalto=True, agua=True, energia=True, esgoto=False, iluminacao=True,
+        areas_de_lazer="Praça e quadra poliesportiva",
+    )
+    dados.update(extra)
+    return Loteamento.objects.create(**dados)
+
+
+def criar_imovel_lote(empresa, corretor, proprietario, codigo, **extra):
+    imovel = criar_imovel(
+        empresa, corretor, proprietario, codigo=codigo, natureza=Imovel.Natureza.LOTE,
+        preco_venda="120000.00", **extra,
+    )
+    imovel.refresh_from_db()  # preço volta como Decimal, como chega pelas telas e pela API
+    return imovel
+
+
+def dados_lote(quadra, **extra):
+    dados = {
+        "quadra": quadra.pk, "numero": "7", "area": "250.00", "frente": "10.00",
+        "fundo": "25.00", "entrada_minima": "12000.00", "parcelas_maximas": 120,
+        "condicoes_parcelamento": "Correção anual pelo IPCA",
+    }
+    dados.update(extra)
+    return dados
+
+
+def criar_lote(imovel, quadra, **extra):
+    dados = dados_lote(quadra, **extra)
+    dados["quadra"] = quadra
+    return Lote.objects.create(imovel=imovel, **dados)
+
+
+class LoteamentoModelTests(TestCase):
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        self.loteamento = criar_loteamento(self.empresa)
+        self.quadra_a = Quadra.objects.create(loteamento=self.loteamento, identificacao="A")
+        self.imovel1 = criar_imovel_lote(self.empresa, self.corretor, self.proprietario, "L1")
+        self.imovel2 = criar_imovel_lote(self.empresa, self.corretor, self.proprietario, "L2")
+
+    def _lote(self, imovel, **extra):
+        dados = dados_lote(self.quadra_a, **extra)
+        dados["quadra"] = self.quadra_a
+        return Lote(imovel=imovel, **dados)
+
+    def test_cadastro_do_lote_na_quadra(self):
+        lote = self._lote(self.imovel1)
+        lote.full_clean()
+        lote.save()
+        self.assertEqual(self.quadra_a.lotes.count(), 1)
+
+    def test_quadra_repetida_no_loteamento_e_recusada(self):
+        repetida = Quadra(loteamento=self.loteamento, identificacao="A")
+        with self.assertRaises(ValidationError):
+            repetida.full_clean()
+
+    def test_mesma_quadra_em_outro_loteamento_e_aceita(self):
+        outro = criar_loteamento(self.empresa, nome="Recanto Verde")
+        Quadra(loteamento=outro, identificacao="A").full_clean()
+
+    def test_numero_de_lote_repetido_na_quadra_e_recusado(self):
+        criar_lote(self.imovel1, self.quadra_a)
+        with self.assertRaises(ValidationError) as contexto:
+            self._lote(self.imovel2).full_clean()
+        self.assertIn("Já existe um lote com esse número nesta quadra.", contexto.exception.messages)
+
+    def test_banco_tambem_recusa_numero_repetido(self):
+        criar_lote(self.imovel1, self.quadra_a)
+        with self.assertRaises(IntegrityError):
+            criar_lote(self.imovel2, self.quadra_a)
+
+    def test_mesmo_numero_em_outra_quadra_e_aceito(self):
+        criar_lote(self.imovel1, self.quadra_a)
+        quadra_b = Quadra.objects.create(loteamento=self.loteamento, identificacao="B")
+        lote = self._lote(self.imovel2)
+        lote.quadra = quadra_b
+        lote.full_clean()
+
+    def test_quadra_de_outra_empresa_e_recusada(self):
+        outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        quadra_de_fora = Quadra.objects.create(
+            loteamento=criar_loteamento(outra_empresa), identificacao="A"
+        )
+        lote = self._lote(self.imovel1)
+        lote.quadra = quadra_de_fora
+        with self.assertRaises(ValidationError) as contexto:
+            lote.full_clean()
+        self.assertIn("quadra", contexto.exception.message_dict)
+
+    def test_entrada_maior_que_preco_e_recusada(self):
+        with self.assertRaises(ValidationError) as contexto:
+            self._lote(self.imovel1, entrada_minima="200000.00").full_clean()
+        self.assertIn("entrada_minima", contexto.exception.message_dict)
+
+    def test_lote_nao_entra_em_casa(self):
+        casa = criar_imovel(self.empresa, self.corretor, self.proprietario, codigo="CASA")
+        with self.assertRaises(ValidationError):
+            self._lote(casa).full_clean()
+
+    def test_resumo_por_quadra_conta_disponiveis_e_vendidos(self):
+        criar_lote(self.imovel1, self.quadra_a, numero="1")
+        criar_lote(self.imovel2, self.quadra_a, numero="2")
+        self.assertEqual(
+            self.quadra_a.resumo_lotes(), {"total": 2, "disponiveis": 2, "vendidos": 0}
+        )
+
+    def test_lote_publica_como_imovel(self):
+        endereco = Endereco.objects.create(
+            cep="04000-000", logradouro="Rua 1", numero="s/n", bairro="Jardim das Flores",
+            cidade=self.loteamento.cidade, latitude="-23.5", longitude="-46.6",
+        )
+        self.imovel1.endereco = endereco
+        self.imovel1.save()
+        criar_lote(self.imovel1, self.quadra_a)
+        self.imovel1.publicar()
+        self.assertTrue(Imovel.objects.get(pk=self.imovel1.pk).publicado)
+
+
+class PainelLoteamentoTests(TestCase):
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        self.loteamento = criar_loteamento(self.empresa)
+        self.quadra_a = Quadra.objects.create(loteamento=self.loteamento, identificacao="A")
+        self.imovel = criar_imovel_lote(self.empresa, self.corretor, self.proprietario, "L1")
+        self.client.force_login(self.corretor)
+
+    def test_gestor_nao_acessa_loteamentos(self):
+        self.client.force_login(criar_gestor(self.empresa))
+        response = self.client.get(reverse("imoveis:loteamento_list"))
+        self.assertEqual(response.status_code, 403)
+
+    def test_cadastra_loteamento(self):
+        response = self.client.post(reverse("imoveis:loteamento_create"), {
+            "nome": "Recanto Verde", "cidade": self.loteamento.cidade.pk,
+            "incorporadora": "Beta", "asfalto": "on", "agua": "on", "areas_de_lazer": "Praça",
+        })
+        loteamento = Loteamento.objects.get(nome="Recanto Verde")
+        self.assertRedirects(response, reverse("imoveis:loteamento_detail", args=[loteamento.pk]))
+        self.assertEqual(loteamento.empresa, self.empresa)
+        self.assertTrue(loteamento.asfalto)
+        self.assertFalse(loteamento.esgoto)
+
+    def test_nome_repetido_mostra_erro(self):
+        response = self.client.post(reverse("imoveis:loteamento_create"), {
+            "nome": "Jardim das Flores", "cidade": self.loteamento.cidade.pk, "incorporadora": "X",
+        })
+        self.assertContains(response, "Já existe um loteamento com esse nome")
+
+    def test_cadastra_quadra_na_tela_do_loteamento(self):
+        url = reverse("imoveis:loteamento_detail", args=[self.loteamento.pk])
+        response = self.client.post(url, {"identificacao": "B"})
+        self.assertRedirects(response, url)
+        self.assertTrue(self.loteamento.quadras.filter(identificacao="B").exists())
+
+    def test_quadra_repetida_mostra_erro(self):
+        response = self.client.post(
+            reverse("imoveis:loteamento_detail", args=[self.loteamento.pk]), {"identificacao": "A"}
+        )
+        self.assertContains(response, "Já existe uma quadra com essa identificação")
+
+    def test_tela_mostra_disponiveis_e_vendidos_por_quadra(self):
+        criar_lote(self.imovel, self.quadra_a)
+        Quadra.objects.create(loteamento=self.loteamento, identificacao="B")
+        response = self.client.get(reverse("imoveis:loteamento_detail", args=[self.loteamento.pk]))
+        resumos = {q.identificacao: r for q, r in response.context["quadras"]}
+        self.assertEqual(resumos["A"], {"total": 1, "disponiveis": 1, "vendidos": 0})
+        self.assertEqual(resumos["B"], {"total": 0, "disponiveis": 0, "vendidos": 0})
+        self.assertContains(response, "Vendidos")
+
+    def test_loteamento_de_outra_empresa_da_404(self):
+        outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        de_fora = criar_loteamento(outra_empresa)
+        response = self.client.get(reverse("imoveis:loteamento_detail", args=[de_fora.pk]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_atalho_novo_lote_ja_escolhe_a_natureza(self):
+        response = self.client.get(reverse("imoveis:imovel_create") + "?natureza=LOTE")
+        self.assertEqual(response.context["form"].initial["natureza"], Imovel.Natureza.LOTE)
+
+    def test_tela_do_lote_so_lista_quadras_da_empresa(self):
+        outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        Quadra.objects.create(loteamento=criar_loteamento(outra_empresa), identificacao="Z")
+        response = self.client.get(reverse("imoveis:imovel_detail", args=[self.imovel.pk]))
+        form = response.context["detalhes_form"]
+        self.assertEqual(list(form.fields["quadra"].queryset), [self.quadra_a])
+
+    def test_salva_lote_e_detalhe_mostra_quadra_e_loteamento(self):
+        response = self.client.post(
+            reverse("imoveis:imovel_atualizar_detalhes", args=[self.imovel.pk]),
+            dados_lote(self.quadra_a),
+        )
+        self.assertRedirects(response, reverse("imoveis:imovel_detail", args=[self.imovel.pk]))
+        response = self.client.get(reverse("imoveis:imovel_detail", args=[self.imovel.pk]))
+        self.assertContains(response, "Quadra A")
+        self.assertContains(response, "Jardim das Flores")
+        self.assertContains(response, "Asfalto")
+        self.assertContains(response, "até 120x")
+
+    def test_lote_repetido_mostra_mensagem_clara(self):
+        outro = criar_imovel_lote(self.empresa, self.corretor, self.proprietario, "L2")
+        criar_lote(outro, self.quadra_a)
+        response = self.client.post(
+            reverse("imoveis:imovel_atualizar_detalhes", args=[self.imovel.pk]),
+            dados_lote(self.quadra_a),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Já existe um lote com esse número nesta quadra.")
+
+
+class ApiLoteamentoTests(APITestCase):
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        self.loteamento = criar_loteamento(self.empresa)
+        self.quadra_a = Quadra.objects.create(loteamento=self.loteamento, identificacao="A")
+        self.imovel = criar_imovel_lote(self.empresa, self.corretor, self.proprietario, "L1")
+        self.outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        self.loteamento_de_fora = criar_loteamento(self.outra_empresa, nome="De fora")
+        self.quadra_de_fora = Quadra.objects.create(
+            loteamento=self.loteamento_de_fora, identificacao="A"
+        )
+        self.client.force_authenticate(self.corretor)
+
+    def test_cria_loteamento(self):
+        response = self.client.post(reverse("loteamento-list"), {
+            "nome": "Recanto Verde", "cidade": self.loteamento.cidade.pk,
+            "incorporadora": "Beta", "agua": True,
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(Loteamento.objects.get(pk=response.data["id"]).empresa, self.empresa)
+
+    def test_lista_so_loteamentos_da_empresa(self):
+        response = self.client.get(reverse("loteamento-list"))
+        self.assertEqual([l["nome"] for l in response.data], ["Jardim das Flores"])
+
+    def test_loteamento_de_outra_empresa_da_404(self):
+        response = self.client.get(reverse("loteamento-detail", args=[self.loteamento_de_fora.pk]))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_loteamento_traz_resumo_por_quadra(self):
+        criar_lote(self.imovel, self.quadra_a)
+        response = self.client.get(reverse("loteamento-detail", args=[self.loteamento.pk]))
+        self.assertEqual(response.data["quadras"], [
+            {"id": self.quadra_a.pk, "identificacao": "A", "total": 1, "disponiveis": 1, "vendidos": 0}
+        ])
+
+    def test_cria_quadra(self):
+        response = self.client.post(reverse("quadra-list"), {
+            "loteamento": self.loteamento.pk, "identificacao": "B",
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+    def test_quadra_repetida_e_recusada(self):
+        response = self.client.post(reverse("quadra-list"), {
+            "loteamento": self.loteamento.pk, "identificacao": "A",
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_nao_cria_quadra_em_loteamento_de_outra_empresa(self):
+        response = self.client.post(reverse("quadra-list"), {
+            "loteamento": self.loteamento_de_fora.pk, "identificacao": "B",
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("loteamento", response.data)
+
+    def test_quadra_de_outra_empresa_da_404(self):
+        response = self.client.get(reverse("quadra-detail", args=[self.quadra_de_fora.pk]))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_put_detalhes_do_lote(self):
+        response = self.client.put(
+            reverse("imovel-detalhes", args=[self.imovel.pk]), dados_lote(self.quadra_a),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["quadra"]["loteamento"]["nome"], "Jardim das Flores")
+
+    def test_detalhe_do_lote_traz_quadra_e_loteamento(self):
+        criar_lote(self.imovel, self.quadra_a)
+        response = self.client.get(reverse("imovel-detail", args=[self.imovel.pk]))
+        lote = response.data["lote"]
+        self.assertEqual(response.data["natureza"], "LOTE")
+        self.assertEqual(response.data["preco_venda"], "120000.00")
+        self.assertEqual(lote["numero"], "7")
+        self.assertEqual(lote["parcelas_maximas"], 120)
+        self.assertFalse(lote["vendido"])
+        self.assertEqual(lote["quadra"]["identificacao"], "A")
+        self.assertTrue(lote["quadra"]["loteamento"]["asfalto"])
+        self.assertEqual(lote["quadra"]["loteamento"]["incorporadora"], "Incorporadora Alfa")
+
+    def test_lote_repetido_e_recusado_com_mensagem(self):
+        outro = criar_imovel_lote(self.empresa, self.corretor, self.proprietario, "L2")
+        criar_lote(outro, self.quadra_a)
+        response = self.client.put(
+            reverse("imovel-detalhes", args=[self.imovel.pk]), dados_lote(self.quadra_a),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn(
+            "Já existe um lote com esse número nesta quadra.",
+            [str(m) for m in response.data["non_field_errors"]],
+        )
+
+    def test_nao_liga_lote_a_quadra_de_outra_empresa(self):
+        response = self.client.put(
+            reverse("imovel-detalhes", args=[self.imovel.pk]), dados_lote(self.quadra_de_fora),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("quadra", response.data)
+
+    def test_lote_publicado_pela_api(self):
+        criar_lote(self.imovel, self.quadra_a)
+        self.client.put(reverse("imovel-endereco", args=[self.imovel.pk]), {
+            "cep": "04000-000", "logradouro": "Rua 1", "numero": "s/n", "bairro": "Jardim das Flores",
+            "cidade": self.loteamento.cidade.pk, "latitude": "-23.5", "longitude": "-46.6",
+        })
+        self.client.force_authenticate(criar_gestor(self.empresa))
+        response = self.client.post(reverse("gestao-imovel-publicar", args=[self.imovel.pk]))
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertTrue(response.data["publicado"])
+        self.assertEqual(response.data["lote"]["quadra"]["loteamento"]["nome"], "Jardim das Flores")
+
+    def test_nao_exclui_quadra_com_lotes(self):
+        criar_lote(self.imovel, self.quadra_a)
+        response = self.client.delete(reverse("quadra-detail", args=[self.quadra_a.pk]))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+# --- Lote na vitrine pública (APP05, D-06) -----------------------------------
+
+
+def criar_lote_da_vitrine(imovel, empresa, cidade, **extra):
+    """Lote com quadra e loteamento. `cidade` é a do LOTEAMENTO, de propósito diferente da
+    do endereço do imóvel nos testes: a vitrine só lê o endereço do imóvel.
+    """
+    loteamento, _ = Loteamento.objects.get_or_create(
+        empresa=empresa, nome="Jardim das Flores",
+        defaults=dict(
+            cidade=cidade, incorporadora="Incorporadora Alfa", asfalto=True, agua=True,
+            energia=True, esgoto=False, iluminacao=True,
+            areas_de_lazer="Praça e quadra poliesportiva",
+        ),
+    )
+    quadra, _ = Quadra.objects.get_or_create(loteamento=loteamento, identificacao="B")
+    dados = dict(
+        numero="7", area="360.00", frente="12.00", fundo="30.00", entrada_minima="12000.00",
+        parcelas_maximas=120, condicoes_parcelamento="Correção anual pelo IPCA",
+    )
+    dados.update(extra)
+    return Lote.objects.create(imovel=imovel, quadra=quadra, **dados)
+
+
+def publicar_lote_da_vitrine(teste):
+    """Publica (Imovel.publicar) um lote de endereço em São Paulo e loteamento em Campinas."""
+    imovel = criar_imovel(
+        teste.empresa, teste.corretor, teste.proprietario, codigo="LOTE-INTERNO-1",
+        titulo="Lote no Jardim das Flores", natureza=Imovel.Natureza.LOTE,
+        preco_venda="120000.00",
+        endereco=criar_endereco(teste.sp, "Vila Nova", cep="01310-100"),
+    )
+    lote = criar_lote_da_vitrine(imovel, teste.empresa, teste.campinas)
+    imovel.publicar()
+    return imovel, lote
+
+
+class VitrineLoteTests(VitrineBase):
+    """D-06: o lote é natureza pública — na lista (área do lote) e no detalhe (bloco lote)."""
+
+    def setUp(self):
+        super().setUp()
+        # o endereço do imóvel é em São Paulo; o loteamento fica em Campinas de propósito
+        self.imovel_lote, self.lote = publicar_lote_da_vitrine(self)
+
+    def detalhe(self, imovel):
+        return self.client.get(reverse("publico-imovel", args=[imovel.pk]))
+
+    def test_lote_aparece_na_cidade_do_endereco_do_imovel_e_nao_na_do_loteamento(self):
+        self.assertIn(self.imovel_lote.pk, self.ids(self.buscar(natureza="LOTE")))
+        self.assertEqual(self.ids(self.buscar(self.campinas, natureza="LOTE")), [])
+
+    def test_item_da_lista_traz_a_area_do_lote_e_quartos_suites_vagas_nulos(self):
+        item = self.buscar(natureza="LOTE").data["results"][0]
+        self.assertEqual(item["id"], self.imovel_lote.pk)
+        self.assertEqual(item["natureza"], "LOTE")
+        self.assertEqual(Decimal(item["area"]), Decimal("360.00"))
+        self.assertEqual(item["bairro"], "Vila Nova")
+        self.assertIsNone(item["quartos"])
+        self.assertIsNone(item["suites"])
+        self.assertIsNone(item["vagas"])
+
+    def test_filtro_e_ordenacao_por_area_incluem_o_lote(self):
+        self.assertIn(self.imovel_lote.pk, self.ids(self.buscar(area_min="300", area_max="400")))
+        self.assertNotIn(self.imovel_lote.pk, self.ids(self.buscar(area_min="400")))
+        # casa 150 m², apartamento 70 m², terreno 360 m², lote 360 m²
+        ordenados = self.ids(self.buscar(ordenar="-area"))
+        self.assertCountEqual(ordenados[:2], [self.terreno.pk, self.imovel_lote.pk])
+        crescente = self.ids(self.buscar(ordenar="area"))
+        self.assertEqual(crescente[:3], [self.apto.pk, self.sobrado.pk, self.casa.pk])
+        self.assertCountEqual(crescente[-2:], [self.terreno.pk, self.imovel_lote.pk])
+
+    def test_detalhe_do_lote_traz_o_bloco_lote_e_as_outras_naturezas_nulas(self):
+        dados = self.detalhe(self.imovel_lote).data
+        self.assertEqual(dados["natureza"], "LOTE")
+        self.assertIsNone(dados["casa"])
+        self.assertIsNone(dados["terreno"])
+        self.assertIsNone(dados["apartamento"])
+
+        lote = dados["lote"]
+        self.assertEqual(lote["numero"], "7")
+        self.assertEqual(Decimal(lote["area"]), Decimal("360.00"))
+        self.assertEqual(Decimal(lote["frente"]), Decimal("12.00"))
+        self.assertEqual(Decimal(lote["fundo"]), Decimal("30.00"))
+        self.assertEqual(Decimal(lote["entrada_minima"]), Decimal("12000.00"))
+        self.assertEqual(lote["parcelas_maximas"], 120)
+        self.assertEqual(lote["condicoes_parcelamento"], "Correção anual pelo IPCA")
+        self.assertEqual(lote["quadra"]["identificacao"], "B")
+        loteamento = lote["quadra"]["loteamento"]
+        self.assertEqual(loteamento["nome"], "Jardim das Flores")
+        self.assertEqual(loteamento["incorporadora"], "Incorporadora Alfa")
+        self.assertEqual(
+            (loteamento["asfalto"], loteamento["agua"], loteamento["energia"],
+             loteamento["esgoto"], loteamento["iluminacao"]),
+            (True, True, True, False, True),
+        )
+        self.assertEqual(loteamento["areas_de_lazer"], "Praça e quadra poliesportiva")
+        # o preço do lote é o preço do imóvel — sem duplicar dentro do bloco
+        self.assertEqual(Decimal(dados["preco_venda"]), Decimal("120000.00"))
+        self.assertNotIn("preco", lote)
+        # endereço do detalhe é o do imóvel (São Paulo), não a cidade do loteamento
+        self.assertEqual(dados["endereco"]["cidade"]["nome"], "São Paulo")
+
+    def test_detalhe_da_casa_traz_lote_nulo(self):
+        self.assertIsNone(self.detalhe(self.casa).data["lote"])
+
+    def test_detalhe_do_lote_tem_numero_fixo_de_consultas(self):
+        with self.assertNumQueries(3):  # imóvel (todos os joins, lote incluso), fotos, características
+            self.assertEqual(self.detalhe(self.imovel_lote).status_code, status.HTTP_200_OK)
+
+    def test_lote_reservado_some_da_lista_e_o_detalhe_da_404(self):
+        self.imovel_lote.mudar_situacao(Imovel.Situacao.RESERVADO, criar_gestor(self.empresa))
+        self.assertNotIn(self.imovel_lote.pk, self.ids(self.buscar(natureza="LOTE")))
+        self.assertEqual(self.detalhe(self.imovel_lote).status_code, status.HTTP_404_NOT_FOUND)
+
+
+class VitrineAllowlistExataTests(VitrineBase):
+    """D-10: o conjunto de chaves de todo objeto público é travado por igualdade exata.
+
+    Complementa o deny-list de VitrineSemTokenESemVazamentoTests: campo novo num serializer
+    público só aparece se alguém mudar estes conjuntos de propósito.
+    """
+
+    CHAVES_ITEM = {
+        "id", "titulo", "natureza", "finalidade", "preco_venda", "preco_aluguel",
+        "preco_condominio", "bairro", "area", "quartos", "suites", "vagas", "foto_capa",
+    }
+    CHAVES_DETALHE = {
+        "id", "titulo", "natureza", "finalidade", "preco_venda", "preco_aluguel",
+        "preco_condominio", "preco_iptu", "descricao", "caracteristicas", "casa", "terreno",
+        "apartamento", "lote", "endereco", "fotos", "corretor_responsavel",
+    }
+    CHAVES_ENDERECO = {"logradouro", "numero", "bairro", "cep", "cidade", "latitude", "longitude"}
+    CHAVES_CIDADE = {"id", "nome", "uf"}
+    CHAVES_FOTO = {"imagem", "ordem", "capa"}
+    CHAVES_CARACTERISTICA = {"id", "nome"}
+    CHAVES_CASA = {
+        "area_terreno", "area_construida", "area_livre", "quartos", "suites", "banheiros",
+        "salas", "vagas", "pavimentos", "ano_construcao", "piscina", "quintal",
+        "churrasqueira", "mobiliada",
+    }
+    CHAVES_TERRENO = {
+        "area_total", "frente", "fundo", "lateral_esquerda", "lateral_direita", "topografia",
+        "murado", "esquina", "uso_permitido",
+    }
+    CHAVES_APARTAMENTO = {
+        "predio", "andar", "area_privativa", "area_total", "quartos", "suites", "banheiros",
+        "vagas", "varanda", "posicao_solar",
+    }
+    CHAVES_PREDIO = {
+        "nome", "andares", "ano_construcao", "elevadores", "portaria_24h", "piscina",
+        "academia", "salao_de_festas", "playground",
+    }
+    CHAVES_LOTE = {
+        "numero", "area", "frente", "fundo", "entrada_minima", "parcelas_maximas",
+        "condicoes_parcelamento", "quadra",
+    }
+    CHAVES_QUADRA = {"identificacao", "loteamento"}
+    CHAVES_LOTEAMENTO = {
+        "nome", "incorporadora", "asfalto", "agua", "energia", "esgoto", "iluminacao",
+        "areas_de_lazer",
+    }
+    # Task 2 do 05-02 (opcao-a): empresa_id fica no perfil público da W02. Pendente para a
+    # frente web decidir (revisão de exposição de contato do corretor, §11.5 g, também adiada).
+    CHAVES_CORRETOR = {
+        "id", "empresa_id", "nome", "foto", "email", "creci", "telefone", "whatsapp",
+        "apresentacao",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.imovel_lote, self.lote = publicar_lote_da_vitrine(self)
+        FotoImovel.objects.create(imovel=self.imovel_lote, imagem=gerar_imagem(), ordem=0)
+
+    def detalhe(self, imovel):
+        response = self.client.get(reverse("publico-imovel", args=[imovel.pk]))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return response.json()
+
+    def test_item_da_lista_de_toda_natureza_tem_as_chaves_exatas(self):
+        itens = self.buscar().json()["results"]
+        naturezas = {item["natureza"] for item in itens}
+        self.assertEqual(naturezas, {"CASA", "APARTAMENTO", "TERRENO", "LOTE"})
+        for item in itens:
+            with self.subTest(id=item["id"], natureza=item["natureza"]):
+                self.assertEqual(set(item), self.CHAVES_ITEM)
+
+    def test_detalhe_de_toda_natureza_tem_as_chaves_exatas(self):
+        for imovel in (self.casa, self.apto, self.terreno, self.imovel_lote):
+            with self.subTest(natureza=imovel.natureza):
+                dados = self.detalhe(imovel)
+                self.assertEqual(set(dados), self.CHAVES_DETALHE)
+                self.assertEqual(set(dados["endereco"]), self.CHAVES_ENDERECO)
+                self.assertEqual(set(dados["endereco"]["cidade"]), self.CHAVES_CIDADE)
+                self.assertEqual(set(dados["corretor_responsavel"]), self.CHAVES_CORRETOR)
+                for foto in dados["fotos"]:
+                    self.assertEqual(set(foto), self.CHAVES_FOTO)
+                for caracteristica in dados["caracteristicas"]:
+                    self.assertEqual(set(caracteristica), self.CHAVES_CARACTERISTICA)
+
+    def test_bloco_da_natureza_tem_as_chaves_exatas_e_os_outros_vem_nulos(self):
+        esperado = {
+            "casa": (self.casa, self.CHAVES_CASA),
+            "terreno": (self.terreno, self.CHAVES_TERRENO),
+            "apartamento": (self.apto, self.CHAVES_APARTAMENTO),
+            "lote": (self.imovel_lote, self.CHAVES_LOTE),
+        }
+        for bloco, (imovel, chaves) in esperado.items():
+            with self.subTest(bloco=bloco):
+                dados = self.detalhe(imovel)
+                self.assertEqual(set(dados[bloco]), chaves)
+                for outro in set(esperado) - {bloco}:
+                    self.assertIsNone(dados[outro])
+
+    def test_predio_quadra_e_loteamento_tem_as_chaves_exatas(self):
+        self.assertEqual(set(self.detalhe(self.apto)["apartamento"]["predio"]), self.CHAVES_PREDIO)
+        quadra = self.detalhe(self.imovel_lote)["lote"]["quadra"]
+        self.assertEqual(set(quadra), self.CHAVES_QUADRA)
+        self.assertEqual(set(quadra["loteamento"]), self.CHAVES_LOTEAMENTO)
+
+    def test_lote_nao_vaza_vendido_id_cidade_nem_empresa(self):
+        corpo = self.detalhe(self.imovel_lote)
+        vazadas = todas_as_chaves(corpo) & VitrineSemTokenESemVazamentoTests.CHAVES_PROIBIDAS
+        self.assertFalse(vazadas, vazadas)
+        lote = corpo["lote"]
+        for proibida in ("id", "vendido", "preco", "imovel", "empresa", "cidade"):
+            self.assertNotIn(proibida, lote)
+            self.assertNotIn(proibida, lote["quadra"])
+            self.assertNotIn(proibida, lote["quadra"]["loteamento"])
+
+
+class VitrineFotosCapaTests(VitrineBase):
+    """A-02: a galeria do detalhe começa pela capa; a ordem é regra da API, o app não reordena."""
+
+    def _fotos(self, imovel, capa_na_ordem=None):
+        fotos = [
+            FotoImovel.objects.create(imovel=imovel, imagem=gerar_imagem(), ordem=ordem)
+            for ordem in (0, 1, 2)
+        ]
+        if capa_na_ordem is not None:
+            fotos[capa_na_ordem].definir_como_capa()
+        return fotos
+
+    def _detalhe(self, imovel):
+        return self.client.get(reverse("publico-imovel", args=[imovel.pk])).json()
+
+    def _cartao(self, imovel):
+        itens = self.buscar().json()["results"]
+        return next(item for item in itens if item["id"] == imovel.pk)
+
+    def test_capa_abre_a_galeria_e_o_resto_segue_ordem_e_id(self):
+        self._fotos(self.sobrado, capa_na_ordem=2)
+        fotos = self._detalhe(self.sobrado)["fotos"]
+        self.assertEqual([f["capa"] for f in fotos], [True, False, False])
+        self.assertEqual([f["ordem"] for f in fotos], [2, 0, 1])
+
+    def test_foto_capa_do_cartao_e_a_primeira_foto_do_detalhe(self):
+        self._fotos(self.sobrado, capa_na_ordem=2)
+        detalhe = self._detalhe(self.sobrado)
+        self.assertEqual(self._cartao(self.sobrado)["foto_capa"], detalhe["fotos"][0]["imagem"])
+
+    def test_sem_capa_marcada_vale_ordem_e_id_e_a_capa_do_cartao_e_a_primeira(self):
+        self._fotos(self.sobrado)
+        detalhe = self._detalhe(self.sobrado)
+        self.assertEqual([f["ordem"] for f in detalhe["fotos"]], [0, 1, 2])
+        self.assertFalse(any(f["capa"] for f in detalhe["fotos"]))
+        self.assertEqual(self._cartao(self.sobrado)["foto_capa"], detalhe["fotos"][0]["imagem"])
+
+    def test_imovel_sem_fotos_tem_galeria_vazia_e_capa_nula(self):
+        self.assertEqual(self._detalhe(self.sobrado)["fotos"], [])
+        self.assertIsNone(self._cartao(self.sobrado)["foto_capa"])
+
+
+# --- Opções de filtro públicas e multi-seleção (APP05, D-07/D-08) ------------
+
+
+class VitrineOpcoesTests(VitrineBase):
+    """D-08: bairros da cidade e catálogo de características, sem token."""
+
+    def setUp(self):
+        super().setUp()
+        self.gestor = criar_gestor(self.empresa)
+        # reservado, de bairro exclusivo: some da vitrine, então o bairro some das opções
+        self.reservado = self._publicado("RESERVADO-1", titulo="Casa reservada", bairro="Tatuapé")
+        self.reservado.mudar_situacao(Imovel.Situacao.RESERVADO, self.gestor)
+        # bairro vazio ou ausente nunca é uma opção
+        self._publicado("SEM-BAIRRO-1", titulo="Casa sem bairro", bairro=None)
+        criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="BAIRRO-VAZIO-1",
+            titulo="Casa de bairro vazio", endereco=criar_endereco(self.sp, ""), publicado=True,
+        )
+
+    def bairros(self, cidade=None):
+        url = reverse("publico-bairros-cidade", args=[(cidade or self.sp).pk])
+        return self.client.get(url)
+
+    def test_bairros_da_cidade_ordenados_e_sem_repeticao(self):
+        response = self.bairros()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Moema se repete (casa e terreno); o do apartamento é o do prédio
+        self.assertEqual(response.json(), ["Bela Vista", "Moema", "Pinheiros"])
+
+    def test_bairro_de_rascunho_reservado_empresa_inativa_ou_outra_cidade_nao_aparece(self):
+        self.rascunho.endereco.bairro = "Bairro do Rascunho"
+        self.rascunho.endereco.save()
+        self.da_inativa.endereco.bairro = "Bairro da Inativa"
+        self.da_inativa.endereco.save()
+        corpo = self.bairros().json()
+        for fora in ("Bairro do Rascunho", "Bairro da Inativa", "Tatuapé", "Centro", ""):
+            self.assertNotIn(fora, corpo)
+        self.assertEqual(self.bairros(self.campinas).json(), ["Centro"])
+
+    def test_bairro_volta_quando_o_imovel_volta_para_a_vitrine(self):
+        self.reservado.mudar_situacao(Imovel.Situacao.DISPONIVEL, self.gestor)
+        self.assertIn("Tatuapé", self.bairros().json())
+
+    def test_todo_bairro_oferecido_leva_a_uma_busca_nao_vazia(self):
+        for bairro in self.bairros().json():
+            with self.subTest(bairro=bairro):
+                self.assertTrue(self.ids(self.buscar(bairro=bairro)))
+
+    def test_cidade_inexistente_da_404_e_post_da_405(self):
+        self.assertEqual(
+            self.client.get(reverse("publico-bairros-cidade", args=[99999])).status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+        url = reverse("publico-bairros-cidade", args=[self.sp.pk])
+        self.assertEqual(self.client.post(url, {}).status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_token_invalido_nao_muda_a_resposta(self):
+        esperado = self.bairros().json()
+        self.client.credentials(HTTP_AUTHORIZATION="Token invalido")
+        response = self.bairros()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json(), esperado)
+
+    def test_catalogo_de_caracteristicas_ordenado_por_nome_sem_token(self):
+        Caracteristica.objects.create(nome="Piscina")  # nenhum imóvel usa: ainda é do catálogo
+        response = self.client.get(reverse("publico-caracteristicas"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        corpo = response.json()
+        self.assertIsInstance(corpo, list)  # sem envelope de paginação
+        self.assertEqual(
+            [item["nome"] for item in corpo], ["Ar-condicionado", "Piscina", "Portão eletrônico"]
+        )
+        for item in corpo:
+            self.assertEqual(set(item), {"id", "nome"})
+        self.assertEqual(corpo[0]["id"], self.ar.pk)
+
+    def test_catalogo_so_aceita_leitura_e_ignora_token_invalido(self):
+        url = reverse("publico-caracteristicas")
+        self.assertEqual(self.client.post(url, {"nome": "X"}).status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.client.credentials(HTTP_AUTHORIZATION="Token invalido")
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
+
+
+class VitrineMultiSelecaoTests(VitrineBase):
+    """D-07: natureza e bairro aceitam vários valores separados por vírgula (OU)."""
+
+    def setUp(self):
+        super().setUp()
+        self.imovel_lote, _ = publicar_lote_da_vitrine(self)
+
+    def test_natureza_csv_traz_casas_e_lotes(self):
+        self.assertCountEqual(
+            self.ids(self.buscar(natureza="CASA,LOTE")),
+            [self.casa.pk, self.sobrado.pk, self.imovel_lote.pk],
+        )
+
+    def test_natureza_unica_continua_funcionando(self):
+        self.assertEqual(self.ids(self.buscar(natureza="LOTE")), [self.imovel_lote.pk])
+        self.assertEqual(self.ids(self.buscar(natureza="TERRENO")), [self.terreno.pk])
+
+    def test_natureza_com_valor_invalido_da_400_com_a_chave_natureza(self):
+        response = self.buscar(natureza="CASA,XYZ")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(set(response.data), {"natureza"})
+        self.assertIn("Opções válidas", str(response.data["natureza"]))
+
+    def test_natureza_com_espacos_vale_como_o_csv_aparado(self):
+        self.assertCountEqual(
+            self.ids(self.buscar(natureza=" CASA , LOTE ")),
+            self.ids(self.buscar(natureza="CASA,LOTE")),
+        )
+
+    def test_natureza_so_com_virgula_vale_como_sem_filtro(self):
+        self.assertCountEqual(self.ids(self.buscar(natureza=",")), self.ids(self.buscar()))
+
+    def test_bairro_csv_traz_os_dois_bairros_sem_diferenciar_maiusculas(self):
+        self.assertCountEqual(
+            self.ids(self.buscar(bairro="MOEMA,pinheiros")),
+            [self.casa.pk, self.terreno.pk, self.sobrado.pk],
+        )
+        # o bairro do apartamento é o do prédio
+        self.assertCountEqual(
+            self.ids(self.buscar(bairro="bela vista, Vila Nova")), [self.apto.pk, self.imovel_lote.pk]
+        )
+
+    def test_bairro_unico_continua_funcionando(self):
+        self.assertCountEqual(self.ids(self.buscar(bairro="moema")), [self.casa.pk, self.terreno.pk])
+
+    def test_bairro_csv_sem_itens_vale_como_sem_filtro(self):
+        self.assertCountEqual(self.ids(self.buscar(bairro=" , ")), self.ids(self.buscar()))
+
+    def test_bairro_csv_respeita_a_cidade(self):
+        # "Centro" só existe em Campinas: em São Paulo não traz nada
+        self.assertEqual(self.ids(self.buscar(bairro="Centro,Inexistente")), [])
+        self.assertEqual(self.ids(self.buscar(cidade=self.campinas, bairro="centro,x")), [self.em_campinas.pk])
+
+    def test_bairro_com_virgula_no_nome_nao_e_representavel(self):
+        """Risco aceito (A-05): a vírgula separa itens, então 'Vila, Nova' vira dois bairros."""
+        self.casa.endereco.bairro = "Vila, Nova"
+        self.casa.endereco.save()
+        self.assertNotIn(self.casa.pk, self.ids(self.buscar(bairro="Vila, Nova")))
+
+
+def endereco_completo(**extra):
+    cidade = Cidade.objects.get_or_create(nome="São Paulo", uf="SP")[0]
+    dados = dict(
+        cep="01000-000", logradouro="Rua A", numero="10", bairro="Centro", cidade=cidade,
+        latitude="-23.55", longitude="-46.63",
+    )
+    dados.update(extra)
+    return Endereco.objects.create(**dados)
+
+
+def gerar_pdf(nome="matricula.pdf"):
+    return SimpleUploadedFile(nome, b"%PDF-1.4\n%fake\n", content_type="application/pdf")
+
+
+def dados_documento(imovel=None, **extra):
+    dados = {"tipo": DocumentoImovel.Tipo.MATRICULA, "arquivo": gerar_pdf(), "data_documento": "2026-01-15"}
+    if imovel is not None:
+        dados["imovel"] = imovel.pk
+    dados.update(extra)
+    return dados
+
+
+class MediaTemporariaMixin:
+    """Arquivos enviados nos testes vão pra uma pasta temporária, apagada no fim."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._media = tempfile.mkdtemp()
+        cls._override = override_settings(MEDIA_ROOT=cls._media)
+        cls._override.enable()
+        super().setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        cls._override.disable()
+        shutil.rmtree(cls._media, ignore_errors=True)
+
+
+class SituacaoPublicacaoModelTests(TestCase):
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.gestor = criar_gestor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        self.imovel = criar_imovel(self.empresa, self.corretor, self.proprietario)
+
+    def test_imovel_nasce_disponivel_e_fora_da_vitrine(self):
+        self.assertEqual(self.imovel.situacao, Imovel.Situacao.DISPONIVEL)
+        self.assertFalse(self.imovel.publicado)
+        self.assertEqual(self.imovel.situacao_desde, self.imovel.criado_em)
+
+    def test_mudar_situacao_grava_historico_completo(self):
+        historico = self.imovel.mudar_situacao(
+            Imovel.Situacao.RESERVADO, self.gestor, "Reservado para o cliente João"
+        )
+        self.imovel.refresh_from_db()
+        self.assertEqual(self.imovel.situacao, Imovel.Situacao.RESERVADO)
+        self.assertEqual(historico.situacao_anterior, Imovel.Situacao.DISPONIVEL)
+        self.assertEqual(historico.situacao_nova, Imovel.Situacao.RESERVADO)
+        self.assertEqual(historico.alterado_por, self.gestor)
+        self.assertEqual(historico.observacao, "Reservado para o cliente João")
+        self.assertIsNotNone(historico.alterado_em)
+
+    def test_historico_responde_desde_quando_esta_reservado(self):
+        historico = self.imovel.mudar_situacao(Imovel.Situacao.RESERVADO, self.gestor)
+        self.assertEqual(self.imovel.situacao_desde, historico.alterado_em)
+
+    def test_cada_mudanca_vira_uma_linha_no_historico(self):
+        self.imovel.mudar_situacao(Imovel.Situacao.RESERVADO, self.gestor)
+        self.imovel.mudar_situacao(Imovel.Situacao.VENDIDO, self.gestor)
+        caminhos = [
+            (h.situacao_anterior, h.situacao_nova)
+            for h in self.imovel.historico_situacao.order_by("id")
+        ]
+        self.assertEqual(caminhos, [("DISPONIVEL", "RESERVADO"), ("RESERVADO", "VENDIDO")])
+
+    def test_mudar_para_a_mesma_situacao_e_recusado(self):
+        with self.assertRaises(ValidationError):
+            self.imovel.mudar_situacao(Imovel.Situacao.DISPONIVEL, self.gestor)
+        self.assertFalse(self.imovel.historico_situacao.exists())
+
+    def test_situacao_invalida_e_recusada(self):
+        with self.assertRaises(ValidationError):
+            self.imovel.mudar_situacao("DEMOLIDO", self.gestor)
+
+    def test_situacao_nao_aparece_no_formulario_do_corretor(self):
+        from .forms import ImovelForm
+
+        self.assertNotIn("situacao", ImovelForm().fields)
+
+    def test_publicar_sem_endereco_diz_que_falta_o_endereco(self):
+        with self.assertRaises(ValidationError) as contexto:
+            self.imovel.publicar()
+        self.assertIn("falta o endereço", contexto.exception.messages[0])
+
+    def test_publicar_com_endereco_incompleto_diz_o_que_falta(self):
+        self.imovel.endereco = endereco_completo(cep="", bairro="", latitude=None)
+        self.imovel.save()
+        with self.assertRaises(ValidationError) as contexto:
+            self.imovel.publicar()
+        mensagem = contexto.exception.messages[0]
+        self.assertIn("CEP", mensagem)
+        self.assertIn("bairro", mensagem)
+        self.assertIn("coordenadas", mensagem)
+        self.assertNotIn("logradouro", mensagem)
+        self.assertFalse(Imovel.objects.get(pk=self.imovel.pk).publicado)
+
+    def test_apartamento_sem_predio_diz_que_falta_o_predio(self):
+        apto = criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="AP1",
+            natureza=Imovel.Natureza.APARTAMENTO,
+        )
+        self.assertEqual(apto.pendencias_para_publicar(), ["o prédio do apartamento (o endereço vem dele)"])
+
+    def test_publicar_e_tirar_da_vitrine(self):
+        self.imovel.endereco = endereco_completo()
+        self.imovel.save()
+        self.imovel.publicar()
+        self.assertTrue(Imovel.objects.get(pk=self.imovel.pk).publicado)
+        self.imovel.despublicar()
+        self.assertFalse(Imovel.objects.get(pk=self.imovel.pk).publicado)
+
+    def test_vitrine_so_mostra_disponivel_e_publicado(self):
+        no_ar = criar_imovel(self.empresa, self.corretor, self.proprietario, codigo="NOAR", publicado=True)
+        criar_imovel(self.empresa, self.corretor, self.proprietario, codigo="RASCUNHO")
+        reservado = criar_imovel(self.empresa, self.corretor, self.proprietario, codigo="RES", publicado=True)
+        reservado.mudar_situacao(Imovel.Situacao.RESERVADO, self.gestor)
+        alugado = criar_imovel(self.empresa, self.corretor, self.proprietario, codigo="ALU", publicado=True)
+        alugado.mudar_situacao(Imovel.Situacao.ALUGADO, self.gestor)
+
+        self.assertEqual(list(Imovel.objects.na_vitrine()), [no_ar])
+
+    def test_imovel_volta_para_a_vitrine_quando_fica_disponivel_de_novo(self):
+        imovel = criar_imovel(self.empresa, self.corretor, self.proprietario, codigo="VOLTA", publicado=True)
+        imovel.mudar_situacao(Imovel.Situacao.RESERVADO, self.gestor)
+        self.assertNotIn(imovel, Imovel.objects.na_vitrine())
+        imovel.mudar_situacao(Imovel.Situacao.DISPONIVEL, self.gestor, "Reserva desfeita")
+        self.assertIn(imovel, Imovel.objects.na_vitrine())
+
+    def test_vitrine_nao_mostra_imovel_de_empresa_inativa(self):
+        criar_imovel(self.empresa, self.corretor, self.proprietario, codigo="NOAR", publicado=True)
+        self.empresa.ativa = False
+        self.empresa.save()
+        self.assertFalse(Imovel.objects.na_vitrine().exists())
+
+    def test_lote_vendido_conta_na_quadra(self):
+        loteamento = criar_loteamento(self.empresa)
+        quadra = Quadra.objects.create(loteamento=loteamento, identificacao="A")
+        vendido = criar_imovel_lote(self.empresa, self.corretor, self.proprietario, "L1")
+        livre = criar_imovel_lote(self.empresa, self.corretor, self.proprietario, "L2")
+        criar_lote(vendido, quadra, numero="1")
+        criar_lote(livre, quadra, numero="2")
+
+        vendido.mudar_situacao(Imovel.Situacao.VENDIDO, self.gestor)
+
+        self.assertEqual(quadra.resumo_lotes(), {"total": 2, "disponiveis": 1, "vendidos": 1})
+
+
+class DocumentoModelTests(MediaTemporariaMixin, TestCase):
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.gestor = criar_gestor(self.empresa)
+        self.imovel = criar_imovel(self.empresa, self.corretor, criar_proprietario(self.empresa))
+
+    def _documento(self, arquivo, **extra):
+        dados = dict(
+            imovel=self.imovel, tipo=DocumentoImovel.Tipo.IPTU, arquivo=arquivo,
+            data_documento=date(2026, 1, 15), enviado_por=self.gestor,
+        )
+        dados.update(extra)
+        return DocumentoImovel(**dados)
+
+    def test_aceita_pdf(self):
+        self._documento(gerar_pdf()).full_clean()
+
+    def test_aceita_imagem(self):
+        self._documento(gerar_imagem()).full_clean()
+
+    def test_recusa_arquivo_que_nao_e_pdf_nem_imagem(self):
+        falso = SimpleUploadedFile("matricula.pdf", b"isto nao e um pdf", content_type="application/pdf")
+        with self.assertRaises(ValidationError) as contexto:
+            self._documento(falso).full_clean()
+        self.assertIn("arquivo", contexto.exception.message_dict)
+
+    def test_recusa_data_no_futuro(self):
+        with self.assertRaises(ValidationError) as contexto:
+            self._documento(gerar_pdf(), data_documento=date(2999, 1, 1)).full_clean()
+        self.assertIn("data_documento", contexto.exception.message_dict)
+
+    def test_nome_do_arquivo_nao_revela_o_original(self):
+        documento = self._documento(gerar_pdf("matricula-do-joao.pdf"))
+        documento.save()
+        self.assertNotIn("joao", documento.arquivo.name)
+        self.assertTrue(documento.arquivo.name.endswith(".pdf"))
+
+
+class PainelGestaoTests(MediaTemporariaMixin, TestCase):
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.gestor = criar_gestor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        self.imovel = criar_imovel(self.empresa, self.corretor, self.proprietario)
+        outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        self.de_fora = criar_imovel(
+            outra_empresa, criar_corretor(outra_empresa, email="fora@teste.com"),
+            criar_proprietario(outra_empresa, documento="10902516612"), codigo="FORA",
+        )
+        self.client.force_login(self.gestor)
+
+    def url(self, nome, *args):
+        return reverse(f"imoveis:{nome}", args=[self.imovel.pk, *args])
+
+    def test_corretor_nao_acessa_a_gestao(self):
+        self.client.force_login(self.corretor)
+        self.assertEqual(self.client.get(reverse("imoveis:gestao_imovel_list")).status_code, 403)
+        self.assertEqual(self.client.post(self.url("gestao_imovel_publicar")).status_code, 403)
+        self.assertEqual(self.client.get(self.url("gestao_imovel_detail")).status_code, 403)
+
+    def test_corretor_nao_tem_mais_o_botao_publicar(self):
+        self.client.force_login(self.corretor)
+        response = self.client.get(reverse("imoveis:imovel_detail", args=[self.imovel.pk]))
+        self.assertNotContains(response, "/publicar/")
+        self.assertContains(response, "controlados pelo gestor")
+
+    def test_lista_so_imoveis_da_empresa(self):
+        response = self.client.get(reverse("imoveis:gestao_imovel_list"))
+        self.assertEqual([i.codigo for i in response.context["imoveis"]], ["IM001"])
+
+    def test_lista_filtra_por_situacao(self):
+        outro = criar_imovel(self.empresa, self.corretor, self.proprietario, codigo="IM002")
+        outro.mudar_situacao(Imovel.Situacao.RESERVADO, self.gestor)
+        response = self.client.get(reverse("imoveis:gestao_imovel_list") + "?situacao=RESERVADO")
+        self.assertEqual([i.codigo for i in response.context["imoveis"]], ["IM002"])
+
+    def test_imovel_de_outra_empresa_da_404(self):
+        response = self.client.get(reverse("imoveis:gestao_imovel_detail", args=[self.de_fora.pk]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_publicar_com_endereco_incompleto_mostra_o_que_falta(self):
+        self.imovel.endereco = endereco_completo(bairro="", numero="")
+        self.imovel.save()
+        response = self.client.post(self.url("gestao_imovel_publicar"), follow=True)
+        self.assertContains(response, "falta número e bairro")
+        self.assertFalse(Imovel.objects.get(pk=self.imovel.pk).publicado)
+
+    def test_tela_mostra_pendencias_antes_de_publicar(self):
+        response = self.client.get(self.url("gestao_imovel_detail"))
+        self.assertContains(response, "Para publicar, falta: o endereço")
+
+    def test_interruptor_publica_e_tira_da_vitrine(self):
+        self.imovel.endereco = endereco_completo()
+        self.imovel.save()
+        self.client.post(self.url("gestao_imovel_publicar"))
+        self.assertTrue(Imovel.objects.get(pk=self.imovel.pk).publicado)
+        self.client.post(self.url("gestao_imovel_despublicar"))
+        self.assertFalse(Imovel.objects.get(pk=self.imovel.pk).publicado)
+
+    def test_muda_situacao_e_grava_historico(self):
+        response = self.client.post(self.url("gestao_imovel_situacao"), {
+            "situacao": Imovel.Situacao.RESERVADO, "observacao": "Sinal pago",
+        })
+        self.assertRedirects(response, self.url("gestao_imovel_detail"))
+        historico = self.imovel.historico_situacao.get()
+        self.assertEqual(historico.alterado_por, self.gestor)
+        self.assertEqual(historico.observacao, "Sinal pago")
+
+        response = self.client.get(self.url("gestao_imovel_detail"))
+        self.assertContains(response, "Reservado</strong> desde")
+        self.assertContains(response, "Sinal pago")
+
+    def test_mesma_situacao_mostra_erro(self):
+        response = self.client.post(self.url("gestao_imovel_situacao"), {
+            "situacao": Imovel.Situacao.DISPONIVEL,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "já está disponível")
+
+    def test_anexa_documento_e_baixa(self):
+        response = self.client.post(self.url("gestao_documento_enviar"), dados_documento(data_documento="15/01/2026"))
+        self.assertRedirects(response, self.url("gestao_imovel_detail"))
+        documento = self.imovel.documentos.get()
+        self.assertEqual(documento.tipo, DocumentoImovel.Tipo.MATRICULA)
+        self.assertEqual(documento.enviado_por, self.gestor)
+        self.assertEqual(str(documento.data_documento), "2026-01-15")
+
+        response = self.client.get(self.url("gestao_documento_baixar", documento.pk))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(b"".join(response.streaming_content), b"%PDF-1.4\n%fake\n")
+
+    def test_documento_invalido_mostra_erro(self):
+        falso = SimpleUploadedFile("x.pdf", b"nada", content_type="application/pdf")
+        response = self.client.post(
+            self.url("gestao_documento_enviar"),
+            dados_documento(arquivo=falso, data_documento="15/01/2026"),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Use PDF, JPG ou PNG")
+        self.assertFalse(self.imovel.documentos.exists())
+
+    def test_campo_de_data_do_documento_e_dia_mes_ano(self):
+        response = self.client.get(self.url("gestao_imovel_detail"))
+        self.assertContains(response, 'placeholder="dd/mm/aaaa"')
+        self.assertNotContains(response, 'type="date"')
+        # máscara que aceita só números e põe as barras (static/js/mascaras.js)
+        self.assertContains(response, 'data-mascara="data"')
+        self.assertContains(response, "js/mascaras.js")
+
+    def test_data_fora_do_formato_dia_mes_ano_mostra_erro(self):
+        response = self.client.post(
+            self.url("gestao_documento_enviar"), dados_documento(data_documento="2026-01-15")
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Informe a data no formato dd/mm/aaaa")
+        self.assertFalse(self.imovel.documentos.exists())
+
+    def test_data_mes_dia_nao_e_aceita_como_dia_mes(self):
+        # 01/15/2026 (mm/dd) não existe em dd/mm: é recusado, não vira outra data
+        response = self.client.post(
+            self.url("gestao_documento_enviar"), dados_documento(data_documento="01/15/2026")
+        )
+        self.assertContains(response, "Informe a data no formato dd/mm/aaaa")
+
+    def test_nao_baixa_documento_de_outra_empresa(self):
+        outro_gestor = criar_gestor(self.de_fora.empresa, email="gestor-fora@teste.com")
+        documento = DocumentoImovel.objects.create(
+            imovel=self.de_fora, tipo=DocumentoImovel.Tipo.IPTU, arquivo=gerar_pdf(),
+            data_documento=date(2026, 1, 1), enviado_por=outro_gestor,
+        )
+        response = self.client.get(
+            reverse("imoveis:gestao_documento_baixar", args=[self.de_fora.pk, documento.pk])
+        )
+        self.assertEqual(response.status_code, 404)
+        # nem trocando só o id do documento, pendurado num imóvel da própria empresa
+        response = self.client.get(self.url("gestao_documento_baixar", documento.pk))
+        self.assertEqual(response.status_code, 404)
+
+
+class ApiGestaoTests(MediaTemporariaMixin, APITestCase):
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.gestor = criar_gestor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        self.imovel = criar_imovel(self.empresa, self.corretor, self.proprietario)
+        outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        self.de_fora = criar_imovel(
+            outra_empresa, criar_corretor(outra_empresa, email="fora@teste.com"),
+            criar_proprietario(outra_empresa, documento="10902516612"), codigo="FORA",
+        )
+        self.client.force_authenticate(self.gestor)
+
+    def test_corretor_nao_acessa_gestao(self):
+        self.client.force_authenticate(self.corretor)
+        self.assertEqual(
+            self.client.get(reverse("gestao-imovel-list")).status_code, status.HTTP_403_FORBIDDEN
+        )
+        self.assertEqual(
+            self.client.get(reverse("gestao-documento-list")).status_code, status.HTTP_403_FORBIDDEN
+        )
+
+    def test_corretor_nao_publica_mais_pela_api(self):
+        self.client.force_authenticate(self.corretor)
+        response = self.client.post(f"/api/imoveis/{self.imovel.pk}/publicar/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_corretor_nao_muda_situacao_nem_publicacao_editando_o_imovel(self):
+        self.client.force_authenticate(self.corretor)
+        self.client.patch(reverse("imovel-detail", args=[self.imovel.pk]), {
+            "situacao": "VENDIDO", "publicado": True,
+        }, format="json")
+        self.imovel.refresh_from_db()
+        self.assertEqual(self.imovel.situacao, Imovel.Situacao.DISPONIVEL)
+        self.assertFalse(self.imovel.publicado)
+
+    def test_gestor_lista_so_da_empresa(self):
+        response = self.client.get(reverse("gestao-imovel-list"))
+        self.assertEqual([i["codigo"] for i in response.data], ["IM001"])
+
+    def test_imovel_de_outra_empresa_da_404(self):
+        response = self.client.post(reverse("gestao-imovel-publicar", args=[self.de_fora.pk]))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_publicar_incompleto_lista_o_que_falta(self):
+        self.imovel.endereco = endereco_completo(cep="")
+        self.imovel.save()
+        response = self.client.post(reverse("gestao-imovel-publicar", args=[self.imovel.pk]))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["pendencias"], ["CEP"])
+        self.assertIn("falta CEP", response.data["detail"])
+
+    def test_publicar_e_despublicar(self):
+        self.imovel.endereco = endereco_completo()
+        self.imovel.save()
+        response = self.client.post(reverse("gestao-imovel-publicar", args=[self.imovel.pk]))
+        self.assertTrue(response.data["publicado"])
+        response = self.client.post(reverse("gestao-imovel-despublicar", args=[self.imovel.pk]))
+        self.assertFalse(response.data["publicado"])
+
+    def test_mudar_situacao_e_ver_historico(self):
+        response = self.client.post(reverse("gestao-imovel-situacao", args=[self.imovel.pk]), {
+            "situacao": "RESERVADO", "observacao": "Sinal pago",
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["situacao"], "RESERVADO")
+
+        response = self.client.get(reverse("gestao-imovel-historico", args=[self.imovel.pk]))
+        self.assertEqual(len(response.data), 1)
+        mudanca = response.data[0]
+        self.assertEqual(mudanca["situacao_anterior"], "DISPONIVEL")
+        self.assertEqual(mudanca["situacao_nova"], "RESERVADO")
+        self.assertEqual(mudanca["alterado_por"], "Gestor Teste")
+        self.assertEqual(mudanca["observacao"], "Sinal pago")
+        self.assertIsNotNone(mudanca["alterado_em"])
+
+    def test_mesma_situacao_e_recusada(self):
+        response = self.client.post(reverse("gestao-imovel-situacao", args=[self.imovel.pk]), {
+            "situacao": "DISPONIVEL",
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_envia_lista_e_baixa_documento(self):
+        response = self.client.post(
+            reverse("gestao-documento-list"), dados_documento(self.imovel), format="multipart"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data["enviado_por"], "Gestor Teste")
+        self.assertNotIn("arquivo", response.data)
+
+        lista = self.client.get(reverse("gestao-documento-list") + f"?imovel={self.imovel.pk}")
+        self.assertEqual(len(lista.data), 1)
+
+        baixar = self.client.get(reverse("gestao-documento-baixar", args=[response.data["id"]]))
+        self.assertEqual(baixar.status_code, status.HTTP_200_OK)
+        self.assertEqual(b"".join(baixar.streaming_content), b"%PDF-1.4\n%fake\n")
+
+    def test_nao_anexa_em_imovel_de_outra_empresa(self):
+        response = self.client.post(
+            reverse("gestao-documento-list"), dados_documento(self.de_fora), format="multipart"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("imovel", response.data)
+
+    def test_documento_invalido_e_recusado(self):
+        falso = SimpleUploadedFile("x.pdf", b"nada", content_type="application/pdf")
+        response = self.client.post(
+            reverse("gestao-documento-list"), dados_documento(self.imovel, arquivo=falso),
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("arquivo", response.data)
+
+
+class VitrinePublicaTests(APITestCase):
+    """Vitrine pública vista pelas rotas da W09 (publico-vitrine-cidade e publico-imovel)."""
+
+    def setUp(self):
+        # o limite de taxa guarda o histórico no cache; cada teste começa do zero e com taxa alta fixa,
+        # então a suíte não depende da velocidade da máquina nem do VITRINE_TAXA_ANONIMA do `.env`
+        cache.clear()
+        fixar_taxa_alta(self)
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.gestor = criar_gestor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        self.no_ar = criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="NOAR", publicado=True,
+            endereco=endereco_completo(),
+        )
+        self.rascunho = criar_imovel(self.empresa, self.corretor, self.proprietario, codigo="RASCUNHO")
+        self.reservado = criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="RES", publicado=True,
+            endereco=endereco_completo(),
+        )
+        self.reservado.mudar_situacao(Imovel.Situacao.RESERVADO, self.gestor)
+        self.cidade = self.no_ar.endereco.cidade
+
+    def listar(self):
+        return self.client.get(reverse("publico-vitrine-cidade", args=[self.cidade.pk]))
+
+    def test_vitrine_nao_exige_login(self):
+        response = self.listar()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_vitrine_so_lista_disponivel_e_publicado(self):
+        response = self.listar()
+        self.assertEqual([i["id"] for i in response.data["results"]], [self.no_ar.pk])
+
+    def test_detalhe_de_imovel_fora_da_vitrine_da_404(self):
+        for imovel in (self.rascunho, self.reservado):
+            response = self.client.get(reverse("publico-imovel", args=[imovel.pk]))
+            self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_vitrine_nao_expoe_dados_internos(self):
+        response = self.client.get(reverse("publico-imovel", args=[self.no_ar.pk]))
+        for campo in ("proprietario", "situacao", "publicado", "pendencias_para_publicar", "documentos"):
+            self.assertNotIn(campo, response.data)
+        self.assertEqual(response.data["endereco"]["bairro"], "Centro")
+
+    def test_vitrine_e_so_leitura(self):
+        response = self.client.post(
+            reverse("publico-vitrine-cidade", args=[self.cidade.pk]), {"codigo": "X"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+
+class FiltrosListaImoveisTests(TestCase):
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.outro_corretor = criar_corretor(self.empresa, email="outro@teste.com")
+        self.gestor = criar_gestor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+
+        self.casa = criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="CASA1", titulo="Casa no centro",
+            publicado=True,
+        )
+        self.terreno = criar_imovel(
+            self.empresa, self.outro_corretor, self.proprietario, codigo="TER1", titulo="Terreno plano",
+            natureza=Imovel.Natureza.TERRENO, finalidade=Imovel.Finalidade.ALUGUEL,
+            preco_venda=None, preco_aluguel="900.00",
+        )
+        self.reservado = criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="CASA2", publicado=True,
+        )
+        self.reservado.mudar_situacao(Imovel.Situacao.RESERVADO, self.gestor)
+
+        outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        self.corretor_de_fora = criar_corretor(outra_empresa, email="fora@teste.com")
+        criar_imovel(
+            outra_empresa, self.corretor_de_fora,
+            criar_proprietario(outra_empresa, documento="10902516612"), codigo="FORA",
+        )
+
+    def codigos(self, url, **filtros):
+        response = self.client.get(url, filtros)
+        self.assertEqual(response.status_code, 200)
+        return sorted(i.codigo for i in response.context["imoveis"])
+
+    # ---------------------------------------------------------------- gestor
+    def test_gestor_filtra_por_natureza(self):
+        self.client.force_login(self.gestor)
+        url = reverse("imoveis:gestao_imovel_list")
+        self.assertEqual(self.codigos(url, natureza="TERRENO"), ["TER1"])
+
+    def test_gestor_filtra_por_corretor(self):
+        self.client.force_login(self.gestor)
+        url = reverse("imoveis:gestao_imovel_list")
+        self.assertEqual(self.codigos(url, corretor=self.outro_corretor.pk), ["TER1"])
+
+    def test_gestor_so_ve_corretores_da_empresa_no_filtro(self):
+        self.client.force_login(self.gestor)
+        response = self.client.get(reverse("imoveis:gestao_imovel_list"))
+        opcoes = list(response.context["filtro"].fields["corretor"].queryset)
+        self.assertEqual(sorted(c.email for c in opcoes), ["corretor@teste.com", "outro@teste.com"])
+
+    def test_corretor_de_outra_empresa_na_url_nao_vaza_nada(self):
+        self.client.force_login(self.gestor)
+        url = reverse("imoveis:gestao_imovel_list")
+        # filtro inválido é ignorado: continua mostrando só os da própria empresa
+        self.assertEqual(self.codigos(url, corretor=self.corretor_de_fora.pk), ["CASA1", "CASA2", "TER1"])
+
+    def test_gestor_filtra_por_vitrine(self):
+        self.client.force_login(self.gestor)
+        url = reverse("imoveis:gestao_imovel_list")
+        self.assertEqual(self.codigos(url, vitrine="NA_VITRINE"), ["CASA1"])
+        self.assertEqual(self.codigos(url, vitrine="PUBLICADO_FORA"), ["CASA2"])
+        self.assertEqual(self.codigos(url, vitrine="NAO_PUBLICADO"), ["TER1"])
+
+    def test_filtro_na_vitrine_bate_com_a_vitrine_publica(self):
+        self.client.force_login(self.gestor)
+        url = reverse("imoveis:gestao_imovel_list")
+        vitrine = sorted(Imovel.objects.na_vitrine().filter(empresa=self.empresa).values_list("codigo", flat=True))
+        self.assertEqual(self.codigos(url, vitrine="NA_VITRINE"), vitrine)
+
+    def test_gestor_combina_filtros(self):
+        self.client.force_login(self.gestor)
+        url = reverse("imoveis:gestao_imovel_list")
+        self.assertEqual(
+            self.codigos(url, natureza="CASA", corretor=self.corretor.pk, situacao="RESERVADO"), ["CASA2"]
+        )
+
+    def test_gestor_busca_por_codigo_ou_titulo(self):
+        self.client.force_login(self.gestor)
+        url = reverse("imoveis:gestao_imovel_list")
+        self.assertEqual(self.codigos(url, busca="ter1"), ["TER1"])
+        self.assertEqual(self.codigos(url, busca="centro"), ["CASA1"])
+
+    # ---------------------------------------------------------------- corretor
+    def test_corretor_tem_os_filtros_das_suas_colunas(self):
+        self.client.force_login(self.corretor)
+        response = self.client.get(reverse("imoveis:imovel_list"))
+        self.assertEqual(
+            list(response.context["filtro"].fields),
+            ["busca", "natureza", "finalidade", "situacao", "vitrine"],
+        )
+
+    def test_corretor_filtra_por_finalidade(self):
+        self.client.force_login(self.corretor)
+        self.assertEqual(self.codigos(reverse("imoveis:imovel_list"), finalidade="ALUGUEL"), ["TER1"])
+
+    def test_corretor_filtra_por_situacao_e_vitrine(self):
+        self.client.force_login(self.corretor)
+        url = reverse("imoveis:imovel_list")
+        self.assertEqual(self.codigos(url, situacao="RESERVADO"), ["CASA2"])
+        self.assertEqual(self.codigos(url, vitrine="NA_VITRINE"), ["CASA1"])
+
+    def test_lista_do_corretor_mostra_situacao_e_vitrine(self):
+        self.client.force_login(self.corretor)
+        response = self.client.get(reverse("imoveis:imovel_list"))
+        self.assertContains(response, "Na vitrine")
+        self.assertContains(response, "Publicado, mas reservado")
+        self.assertContains(response, "Não publicado")
+
+    def test_sem_resultado_avisa_que_e_por_causa_do_filtro(self):
+        self.client.force_login(self.corretor)
+        response = self.client.get(reverse("imoveis:imovel_list"), {"busca": "nada-disso"})
+        self.assertContains(response, "Nenhum imóvel com esses filtros")
+        self.assertContains(response, "Limpar")
