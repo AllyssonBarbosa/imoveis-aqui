@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block titulo %}{% if contrato.pk %}Editar contrato #{{ contrato.pk }}{% else %}Novo contrato{% endif %} — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+<div class="cartao">
+    <h1>{% if contrato.pk %}Editar contrato #{{ contrato.pk }}{% else %}Novo contrato{% endif %}</h1>
+
+    {% if contrato.pk and not contrato.pode_alterar_negocio %}
+        <p class="helptext">
+            Contrato assinado: valores, datas, imóvel, cliente e corretor não podem mais ser alterados.
+            Só as observações.
+        </p>
+    {% else %}
+        <p class="helptext">
+            <strong>Venda:</strong> informe o valor total, a entrada e o número de parcelas.
+            <strong>Locação:</strong> informe o aluguel mensal e a vigência; o número de parcelas sai da vigência.
+            As parcelas são geradas ao salvar.
+        </p>
+    {% endif %}
+
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">{% if contrato.pk %}Salvar{% else %}Cadastrar e gerar parcelas{% endif %}</button>
+        <a class="botao secundario" href="{% if contrato.pk %}{% url 'contratos:contrato_detail' contrato.pk %}{% else %}{% url 'contratos:contrato_list' %}{% endif %}">Cancelar</a>
+    </form>
+</div>
+{% endblock %}

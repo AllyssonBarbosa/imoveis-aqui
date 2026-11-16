@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block titulo %}Contrato #{{ contrato.pk }} — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+{% if messages %}
+    <ul class="mensagens">
+        {% for mensagem in messages %}<li>{{ mensagem }}</li>{% endfor %}
+    </ul>
+{% endif %}
+
+<div class="cabecalho-imovel">
+    <span class="codigo">Contrato #{{ contrato.pk }}</span>
+    <h1>{{ contrato.get_tipo_display }} — {{ contrato.imovel.titulo }}</h1>
+    <span class="situacao{% if contrato.assinado %} ativo{% endif %}">{{ contrato.get_situacao_display }}</span>
+</div>
+<p>
+    <a href="{% url 'contratos:contrato_list' %}">voltar para a lista</a>
+    {% if eh_gestor %} · <a href="{% url 'contratos:contrato_update' contrato.pk %}">editar</a>{% endif %}
+</p>
+
+<div class="secao">
+    <h2>Negócio</h2>
+    <p>
+        <strong>Imóvel:</strong> {{ contrato.imovel.codigo }} — {{ contrato.imovel.titulo }}<br>
+        <strong>Cliente:</strong> {{ contrato.cliente.nome_razao_social }} ({{ contrato.cliente.documento_formatado }})<br>
+        <strong>Corretor:</strong> {{ contrato.corretor.nome }}
+    </p>
+    <p>
+        {% if contrato.tipo == "VENDA" %}
+            <strong>Valor total:</strong> R$ {{ contrato.valor|floatformat:"2g" }} ·
+            <strong>entrada:</strong> R$ {{ contrato.entrada|floatformat:"2g" }} ·
+            <strong>parcelado:</strong> R$ {{ contrato.total_parcelado|floatformat:"2g" }} em {{ contrato.numero_parcelas }}x
+        {% else %}
+            <strong>Aluguel:</strong> R$ {{ contrato.valor|floatformat:"2g" }}/mês ·
+            <strong>vigência:</strong> {{ contrato.data_inicio|date:"d/m/Y" }} a {{ contrato.data_fim|date:"d/m/Y" }}
+            ({{ contrato.numero_parcelas }} meses)
+        {% endif %}
+        <br>
+        <strong>Início:</strong> {{ contrato.data_inicio|date:"d/m/Y" }} ·
+        <strong>vencimento:</strong> todo dia {{ contrato.dia_vencimento }}
+    </p>
+    {% if contrato.assinado %}
+        <p><strong>Assinado em</strong> {{ contrato.data_assinatura|date:"d/m/Y" }}{% if contrato.assinado_por %} por {{ contrato.assinado_por.nome }}{% endif %}.</p>
+    {% endif %}
+    {% if contrato.observacoes %}<p>{{ contrato.observacoes|linebreaksbr }}</p>{% endif %}
+    <p class="texto-suave">Cadastrado por {{ contrato.criado_por.nome }} em {{ contrato.criado_em|date:"d/m/Y H:i" }}.</p>
+</div>
+
+<div class="secao">
+    <h2>Parcelas</h2>
+    <table>
+        <thead>
+            <tr><th>Nº</th><th>Vencimento</th><th>Valor</th></tr>
+        </thead>
+        <tbody>
+            {% for parcela in parcelas %}
+            <tr>
+                <td>{{ parcela.numero }}</td>
+                <td>{{ parcela.vencimento|date:"d/m/Y" }}</td>
+                <td>R$ {{ parcela.valor|floatformat:"2g" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+        <tfoot>
+            <tr><th colspan="2">Total</th><th>R$ {{ total_parcelas|floatformat:"2g" }}</th></tr>
+        </tfoot>
+    </table>
+</div>
+{% endblock %}
