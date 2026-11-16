@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block titulo %}{% if object %}Editar cliente{% else %}Novo cliente{% endif %} — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+<div class="cartao">
+    <h1>{% if object %}Editar cliente{% else %}Novo cliente{% endif %}</h1>
+    <p class="texto-suave">Informe o CPF ou CNPJ e pelo menos um contato (telefone ou e-mail).</p>
+
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">{% if object %}Salvar{% else %}Cadastrar{% endif %}</button>
+        <a class="botao secundario" href="{% url 'clientes:cliente_list' %}">Cancelar</a>
+    </form>
+</div>
+{% endblock %}
