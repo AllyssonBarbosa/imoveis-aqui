@@ -171,8 +171,31 @@
             {% endif %}
             <p class="texto-suave">Anunciado por <a href="{% url 'site_publico:empresa' empresa_id %}">{{ empresa_nome }}</a></p>
 
-            {% if whatsapp %}
-            <a class="botao botao-whatsapp" href="{{ whatsapp }}" target="_blank" rel="noopener">Conversar pelo WhatsApp</a>
+            {# W11: cada botão é um POST que grava o contato e redireciona — robô e pré-carregamento não clicam #}
+            {% if canais %}
+            <div class="botoes-contato">
+                {% if "WHATSAPP" in canais %}
+                <form method="post" action="{% url 'site_publico:contato' imovel.id %}" target="_blank">
+                    {% csrf_token %}
+                    <input type="hidden" name="canal" value="WHATSAPP">
+                    <button type="submit" class="botao botao-whatsapp">Conversar pelo WhatsApp</button>
+                </form>
+                {% endif %}
+                {% if "TELEFONE" in canais %}
+                <form method="post" action="{% url 'site_publico:contato' imovel.id %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="canal" value="TELEFONE">
+                    <button type="submit" class="botao secundario">Ligar</button>
+                </form>
+                {% endif %}
+                {% if "EMAIL" in canais %}
+                <form method="post" action="{% url 'site_publico:contato' imovel.id %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="canal" value="EMAIL">
+                    <button type="submit" class="botao secundario">Enviar e-mail</button>
+                </form>
+                {% endif %}
+            </div>
             {% else %}
             <p class="texto-vazio">Contato indisponível no momento.</p>
             {% endif %}

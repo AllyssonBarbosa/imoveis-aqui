@@ -23,6 +23,7 @@ O app é uma tela sobre os dados: nenhuma regra de negócio é decidida nele —
 | `contas` | `Usuario` customizado (login por e-mail), perfis administrador/gestor/corretor, login do painel e API de autenticação |
 | `proprietarios` | `Proprietario` — dono do imóvel (PF/PJ), sem acesso ao sistema |
 | `imoveis` | `Caracteristica` (tabela geral do administrador), `Imovel` (parte comum do cadastro) e `FotoImovel` |
+| `contatos` | `Contato` — registro de que alguém procurou um imóvel (WhatsApp, telefone ou e-mail) e o retorno anotado (W11) |
 
 ### Isolamento multitenant
 
@@ -134,6 +135,8 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `/painel/imoveis/` | Lista os imóveis da própria empresa | corretor |
 | `/painel/imoveis/novo/` | Cadastra a parte comum do imóvel | corretor |
 | `/painel/imoveis/<id>/` | Página do imóvel — endereço, fotos e botão de publicar | corretor |
+| `/painel/contatos/?imovel=&de=&ate=` | Caixa de contatos, com filtro por imóvel e período e o retorno anotado na própria linha | corretor (os dele) e gestor (os da empresa) |
+| `POST /imovel/<id>/contato/` | Site: grava o contato e redireciona para WhatsApp, `tel:` ou `mailto:` (campo `canal`) | público, sem login |
 | `/admin/` | Django Admin — cadastro de empresas, usuários e características | administrador |
 | `POST /api/auth/login/` | Login da API — corpo `{ "email", "password" }`, devolve `{ "token" }` | app (gestor/corretor) |
 | `GET /api/usuarios/` | Lista os usuários da própria empresa (`Authorization: Token <token>`) | app, autenticado |
@@ -149,6 +152,9 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `GET /api/publico/cidades/` | Cidades atendidas (com UF) — só as que têm imóvel publicado | público — vitrine (site e app) |
 | `GET /api/publico/cidades/<id>/imoveis/` | Busca na cidade, com filtros, ordenação e paginação (ver abaixo) | público — vitrine (site e app) |
 | `GET /api/publico/imoveis/<id>/` | Detalhe do imóvel: fotos, dados da natureza, endereço com coordenada e corretor | público — vitrine (site e app) |
+| `POST /api/publico/imoveis/<id>/contato/` | Grava o contato — corpo `{ "canal": "WHATSAPP" \| "TELEFONE" \| "EMAIL" }`, devolve `{ "canal", "link" }` para o app abrir | público — vitrine (site e app) |
+| `GET /api/contatos/?imovel=&de=&ate=` | Caixa de contatos (mesmos filtros e mesma regra de quem vê do painel) | app, corretor e gestor |
+| `PATCH /api/contatos/<id>/` | Anota o retorno — corpo `{ "retorno": "FALEI" \| "VISITA_AGENDADA" \| "SEM_RESPOSTA" \| "DESCARTADO" }` | app, corretor e gestor |
 
 ## Site público (W10)
 
@@ -156,7 +162,7 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 - Os templates recebem os dados já passados pelos serializers públicos da W09 — por isso o site mostra o mesmo que o app e não tem como exibir proprietário, código interno ou documento.
 - A cidade escolhida fica guardada na sessão (cookie, sem login) e aparece no topo de todas as páginas.
 - Mapa com Leaflet + OpenStreetMap (gratuito, sem chave de API).
-- WhatsApp: o botão chama o corretor responsável; se ele estiver desativado, chama a empresa dona do imóvel.
+- WhatsApp: o botão chama o corretor responsável; se ele estiver desativado, chama a empresa dona do imóvel. Desde a W11 o botão passa pelo servidor, que grava o contato antes de redirecionar (ver abaixo).
 - Perfis: a vitrine da empresa e a do corretor mostram os imóveis publicados de todas as cidades. Empresa inativa e corretor desativado (ou de empresa inativa) dão 404.
 
 ## Vitrine pública (API) — regras de negócio
@@ -177,6 +183,18 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
   - `ordenar` — `recentes` (padrão), `preco`, `-preco`, `area`, `-area`
   - `page` — 20 imóveis por página
 - Corretor desativado não aparece no detalhe (`corretor_responsavel` vem `null`), mas o imóvel continua na vitrine.
+
+## Contatos (W11) — regras de negócio
+
+- **O servidor monta o link.** Os botões da página do imóvel (WhatsApp, Ligar, Enviar e-mail) não levam o link pronto: enviam um POST para `/imovel/<id>/contato/`, que grava o contato e redireciona. O app faz o mesmo pela API e recebe o link para abrir. As regras ficam em `contatos/servicos.py`.
+- **POST, não GET.** Robôs, pré-carregamento do navegador e prévias de link fazem GET sozinhos; só um clique envia o formulário. GET no endereço de contato dá 405 e não grava nada.
+- **Mensagem padrão** com o título, o **código interno** do imóvel e o link do anúncio. O código continua fora da vitrine (HTML e JSON, regra da W09): ele só sai do servidor dentro do link, no momento do clique — o visitante o vê no texto da mensagem antes de enviar.
+- **Para quem vai:** corretor responsável; se ele estiver desativado, a empresa dona do imóvel (o contato fica com `corretor` vazio e só o gestor vê). Autônomo sem telefone/WhatsApp próprio usa os da empresa. Canal sem número/e-mail não aparece na página e é recusado na API.
+- **Só imóvel na vitrine recebe contato** (publicado, de empresa ativa) — usa `imoveis_da_vitrine()`, então segue qualquer regra nova da vitrine.
+- **Guarda o contato, não a conversa:** imóvel, corretor, canal, data e o retorno. Nenhum dado do visitante (nem campo de texto livre).
+- **Quem vê:** sempre filtrado pela empresa do usuário; o corretor vê só os contatos que recebeu, o gestor vê todos da empresa, o administrador não vê nenhum. Contato de fora cai em 404. Corretor e gestor podem anotar o retorno (falei, visita agendada, sem resposta, descartado).
+- Os botões dos perfis (empresa e corretor) continuam indo direto para o WhatsApp, sem registro: o contato pertence a um imóvel, e o perfil não tem um.
+- Limite conhecido: registramos o clique. Quem copiar o número na mão não vira contato. Ainda não há limite de requisições por visitante no endereço público.
 
 ## Painel do gestor — regras de negócio
 

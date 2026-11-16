@@ -519,3 +519,49 @@ fieldset {
 .grade-formulario p {
   min-width: 0;
 }
+
+/* Caixa de contatos (W11) */
+
+.texto-suave {
+  color: var(--cor-texto-suave);
+  font-size: 0.9rem;
+}
+
+.filtros-contatos {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.filtros-contatos label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.filtros-contatos select,
+.filtros-contatos input[type="date"] {
+  width: auto;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--cor-borda);
+  border-radius: 6px;
+  font-family: inherit;
+}
+
+.retorno-contato {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.retorno-contato select {
+  width: auto;
+}
+
+.retorno-contato button {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.82rem;
+}
