@@ -1,5 +1,4 @@
 from django.contrib import messages
-from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.contrib.auth.decorators import login_required
 from django.http import QueryDict
@@ -9,6 +8,7 @@ from django.views.decorators.http import require_POST
 from django.views.generic import ListView
 
 from contas.models import Usuario
+from contas.views import CorretorOuGestorRequiredMixin
 from imoveis.models import Imovel
 from imoveis.vitrine import FiltroInvalido
 
@@ -18,14 +18,9 @@ from .servicos import contatos_visiveis_para, filtrar_contatos
 PERFIS_COM_CAIXA = (Usuario.Perfil.CORRETOR, Usuario.Perfil.GESTOR)
 
 
-class CorretorOuGestorRequiredMixin(LoginRequiredMixin, UserPassesTestMixin):
+class ContatoListView(CorretorOuGestorRequiredMixin, ListView):
     """Caixa de contatos: corretor (os dele) e gestor (os da empresa). Administrador não entra."""
 
-    def test_func(self):
-        return self.request.user.perfil in PERFIS_COM_CAIXA
-
-
-class ContatoListView(CorretorOuGestorRequiredMixin, ListView):
     template_name = "contatos/contato_list.html"
     context_object_name = "contatos"
     paginate_by = 50
