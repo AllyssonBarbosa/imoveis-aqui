@@ -480,10 +480,43 @@ class ApartamentoPublicoSerializer(serializers.ModelSerializer):
         ]
 
 
+class LoteamentoPublicoSerializer(serializers.ModelSerializer):
+    """O que o anúncio do lote mostra do loteamento — sem id, sem cidade (a vitrine usa a do imóvel)."""
+
+    class Meta:
+        model = Loteamento
+        fields = [
+            "nome", "incorporadora", "asfalto", "agua", "energia", "esgoto", "iluminacao",
+            "areas_de_lazer",
+        ]
+
+
+class QuadraPublicaSerializer(serializers.ModelSerializer):
+    loteamento = LoteamentoPublicoSerializer(read_only=True)
+
+    class Meta:
+        model = Quadra
+        fields = ["identificacao", "loteamento"]
+
+
+class LotePublicoSerializer(serializers.ModelSerializer):
+    """Sem `vendido` e sem preço: o preço do lote é o preco_venda do imóvel (§11.5 d)."""
+
+    quadra = QuadraPublicaSerializer(read_only=True)
+
+    class Meta:
+        model = Lote
+        fields = [
+            "numero", "area", "frente", "fundo", "entrada_minima", "parcelas_maximas",
+            "condicoes_parcelamento", "quadra",
+        ]
+
+
 SERIALIZER_PUBLICO_POR_NATUREZA = {
     Imovel.Natureza.CASA: CasaPublicaSerializer,
     Imovel.Natureza.TERRENO: TerrenoPublicoSerializer,
     Imovel.Natureza.APARTAMENTO: ApartamentoPublicoSerializer,
+    Imovel.Natureza.LOTE: LotePublicoSerializer,
 }
 
 
@@ -525,6 +558,7 @@ class ImovelVitrineDetalheSerializer(serializers.ModelSerializer):
     casa = serializers.SerializerMethodField()
     terreno = serializers.SerializerMethodField()
     apartamento = serializers.SerializerMethodField()
+    lote = serializers.SerializerMethodField()
     fotos = FotoPublicaSerializer(many=True, read_only=True)
     corretor_responsavel = serializers.SerializerMethodField()
 
@@ -533,7 +567,7 @@ class ImovelVitrineDetalheSerializer(serializers.ModelSerializer):
         fields = [
             "id", "titulo", "natureza", "finalidade", "preco_venda", "preco_aluguel",
             "preco_condominio", "preco_iptu", "descricao", "caracteristicas", "casa",
-            "terreno", "apartamento", "endereco", "fotos", "corretor_responsavel",
+            "terreno", "apartamento", "lote", "endereco", "fotos", "corretor_responsavel",
         ]
 
     def _detalhes_se_for(self, imovel, natureza):
@@ -549,6 +583,9 @@ class ImovelVitrineDetalheSerializer(serializers.ModelSerializer):
 
     def get_apartamento(self, imovel):
         return self._detalhes_se_for(imovel, Imovel.Natureza.APARTAMENTO)
+
+    def get_lote(self, imovel):
+        return self._detalhes_se_for(imovel, Imovel.Natureza.LOTE)
 
     def get_corretor_responsavel(self, imovel):
         # corretor desativado não recebe contato (W02) — o imóvel continua, sem o contato dele

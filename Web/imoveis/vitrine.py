@@ -12,6 +12,7 @@ from .models import Imovel
 
 APARTAMENTO = Imovel.Natureza.APARTAMENTO
 CASA = Imovel.Natureza.CASA
+LOTE = Imovel.Natureza.LOTE
 TERRENO = Imovel.Natureza.TERRENO
 
 
@@ -29,7 +30,9 @@ def imoveis_da_vitrine():
     Anotações (colunas calculadas na consulta):
     - cidade_anuncio / bairro_anuncio: do endereço do anúncio (prédio, se apartamento)
     - area_anuncio: a área principal de cada natureza — construída (casa),
-      privativa (apartamento) ou total (terreno)
+      privativa (apartamento), total (terreno) ou a do lote
+    - o lote não tem endereço próprio: cidade e bairro vêm do endereço do Imóvel
+      (Loteamento.cidade não conta para a vitrine)
     - quartos / suites / vagas: da casa ou do apartamento (terreno fica sem)
     """
     return (
@@ -41,6 +44,7 @@ def imoveis_da_vitrine():
                 When(natureza=CASA, then=F("casa__area_construida")),
                 When(natureza=APARTAMENTO, then=F("apartamento__area_privativa")),
                 When(natureza=TERRENO, then=F("terreno__area_total")),
+                When(natureza=LOTE, then=F("lote__area")),
             ),
             quartos_anuncio=Case(
                 When(natureza=CASA, then=F("casa__quartos")),

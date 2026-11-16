@@ -66,6 +66,8 @@ cp .env.example .env
 
 O `.env` não vai para o git (está no `.gitignore`) — cada máquina tem o seu.
 
+Duas variáveis opcionais controlam o limite de taxa das rotas públicas da vitrine (os padrões já funcionam): `VITRINE_TAXA_ANONIMA` (padrão `120/min` por IP) e `NUM_PROXIES` (padrão `0`, usa o IP da conexão; atrás de proxy reverso, o número de proxies confiáveis — senão todos os visitantes dividem o IP do proxy e o mesmo limite). `VITRINE_TAXA_ANONIMA` é validada na partida (`<número>/<período>`, ex. `120/min`); formato inválido para a aplicação com `ImproperlyConfigured`. **Em produção informe `NUM_PROXIES` sempre** (o `.env.example` deixa a linha comentada de propósito): sem a variável fora do `DEBUG`, `python manage.py check --deploy` mostra o aviso `core.W001`. Rode esse comando no checklist de deploy.
+
 ### 4. Banco de dados
 
 Crie o banco (uma vez só, por máquina):
@@ -150,21 +152,44 @@ As telas do site público ainda não existem — a API acima é a base para elas
 ## Vitrine pública (API) — regras de negócio
 
 - Não exige login nem token (e um token inválido enviado pelo app não atrapalha). Só leitura.
-- Mostra imóveis de todas as empresas, mas **só publicados e de empresa ativa** — rascunho e empresa inativa caem em 404.
+- Mostra imóveis de todas as empresas, mas **só publicados, com situação disponível, de empresa ativa** (regra única `Imovel.objects.na_vitrine()`, W08) — rascunho, empresa inativa e também reservado/vendido/alugado caem em 404.
 - Não devolve proprietário, documento, código interno, empresa, status de publicação, complemento do endereço nem dados internos do prédio. Os serializers públicos listam campo por campo; um teste confere que nada disso aparece.
 - Apartamento usa a cidade, o bairro e a coordenada do prédio.
 - Parâmetros da busca (`/cidades/<id>/imoveis/`):
-  - `busca` — texto livre no título, bairro e descrição
+  - `busca` — texto livre no título, bairro e descrição; até 200 caracteres
   - `finalidade` (`VENDA`, `ALUGUEL`, `VENDA_E_ALUGUEL`) — "venda" também traz quem é "venda e aluguel", e o mesmo vale para "aluguel"
-  - `natureza` (`CASA`, `APARTAMENTO`, `TERRENO`)
-  - `preco_min` / `preco_max` — compara o preço da finalidade buscada; sem finalidade, o de venda (ou o aluguel, se não houver venda)
-  - `quartos`, `suites`, `vagas` — **mínimo** (pedir 2 quartos traz 3 também)
-  - `bairro` — exato, sem diferenciar maiúsculas
-  - `area_min` / `area_max` — área principal: construída (casa), privativa (apartamento), total (terreno)
-  - `caracteristicas=1,3` — o imóvel precisa ter **todas** as características escolhidas
+  - `natureza` (`CASA`, `APARTAMENTO`, `TERRENO`, `LOTE`) — aceita vários separados por vírgula (`natureza=CASA,LOTE`, OU entre eles); valor fora da lista dá 400
+  - `preco_min` / `preco_max` — compara o preço da finalidade buscada; sem finalidade, o de venda (ou o aluguel, se não houver venda). Número só em dígitos ASCII (`123` ou `123.45`), sem expoente, `NaN`, `Infinity`, sinal de mais, espaço ou sublinhado, de 0 a 9999999999.99
+  - `quartos`, `suites`, `vagas` — **mínimo** (pedir 2 quartos traz 3 também); inteiro só em dígitos ASCII, de 0 a 32767
+  - `bairro` — exato, sem diferenciar maiúsculas; aceita vários separados por vírgula (`bairro=Moema,Pinheiros`, OU entre eles), até 20 itens de até 100 caracteres cada. **Risco aceito:** um bairro com vírgula no nome não consegue ser expresso nesse formato
+  - `area_min` / `area_max` — área principal: construída (casa), privativa (apartamento), total (terreno), área do lote (lote). Mesmo formato numérico do preço, de 0 a 99999999.99 (o teto da coluna de área, menor que o do preço)
+  - `caracteristicas=1,3` — o imóvel precisa ter **todas** as características escolhidas (ids inteiros positivos, até 20 distintos; o filtro é uma única subconsulta)
   - `ordenar` — `recentes` (padrão), `preco`, `-preco`, `area`, `-area`
   - `page` — 20 imóveis por página
+- Entrada fora desses formatos e tetos responde **400** `{campo: mensagem}` em português e nunca 500 (inclusive o byte NUL `%00`, que no PostgreSQL derrubaria a consulta).
+- **Limite de taxa:** as cinco rotas públicas que o app usa (lista, detalhe, cidades, bairros e características) dividem um balde por IP; passou de `VITRINE_TAXA_ANONIMA` (padrão 120/min) responde **429** com o cabeçalho `Retry-After` e corpo `{detail}`. A API autenticada do painel não é limitada. As rotas públicas `corretores/<id>/` e `empresas/<id>/` seguem sem limite. **Deploy:** configure `NUM_PROXIES` atrás de proxy reverso (o `check --deploy` avisa se faltar) e use um cache compartilhado (Redis, Memcached) com vários workers, porque o padrão é `LocMemCache` por processo e o limite efetivo multiplicaria. Muitos aparelhos atrás do mesmo IP (CGNAT) podem bater juntos no limite; ajuste a variável se for o caso.
+- Opções de filtro, públicas e só de leitura:
+  - `GET /api/publico/cidades/<id>/bairros/` — lista de textos, em ordem alfabética e sem repetição, com os bairros dos imóveis que estão na vitrine daquela cidade (o do prédio, para apartamento); cidade inexistente dá 404
+  - `GET /api/publico/caracteristicas/` — catálogo global `[{id, nome}]` ordenado por nome, sem paginação
+- A galeria do detalhe (`fotos`) começa pela capa; o app não reordena.
 - Corretor desativado não aparece no detalhe (`corretor_responsavel` vem `null`), mas o imóvel continua na vitrine.
+
+### Seed de desenvolvimento
+
+Para ter um acervo real na vitrine durante o desenvolvimento:
+
+```bash
+cd Web
+python manage.py migrate
+python manage.py semear_vitrine_dev
+```
+
+- Só roda com `DEBUG=True` (com `DEBUG=False` recusa com erro e não cria nada).
+- É idempotente: rodar de novo não duplica nada, e uma execução interrompida é retomada rodando outra vez.
+- Mexe só na empresa de demonstração "Imobiliária Vitrine Demo (dev)"; nenhuma outra empresa é lida ou alterada.
+- Cria imóveis das 4 naturezas (com loteamento, quadra e lote) em Campinas (24), Valinhos, Vinhedo e Indaiatuba (4 cada), com fotos geradas na hora. Códigos no formato `DEV-<CIDADE>-<NN>`.
+- Os usuários criados (corretores) ficam com senha inutilizável — não há credencial padrão.
+- O emulador Android enxerga o servidor de desenvolvimento como `10.0.2.2`; mantenha esse host no `ALLOWED_HOSTS` (como no `Web/.env.example`).
 
 ## Painel do gestor — regras de negócio
 
