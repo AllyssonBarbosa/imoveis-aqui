@@ -2,6 +2,7 @@
 Django settings for config project.
 """
 
+import sys
 from pathlib import Path
 
 import environ
@@ -156,3 +157,10 @@ REST_FRAMEWORK = {
 LOGIN_URL = 'contas:login'
 LOGIN_REDIRECT_URL = 'contas:painel'
 LOGOUT_REDIRECT_URL = 'contas:login'
+
+
+# Só nos testes (python manage.py test): hasher de senha rápido.
+# Os testes criam centenas de usuários, e o PBKDF2 padrão é lento de propósito
+# (dificulta quebrar senha vazada). Fora dos testes continua o padrão seguro.
+if len(sys.argv) > 1 and sys.argv[1] == "test":
+    PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
