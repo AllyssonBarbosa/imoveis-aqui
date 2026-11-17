@@ -169,5 +169,6 @@ def assinar_contrato(contrato, usuario, data_assinatura):
         usuario,
         f"Contrato #{contrato.pk} de {contrato.get_tipo_display().lower()} assinado em "
         f"{data_assinatura:%d/%m/%Y}.",
+        pelo_contrato=True,
     )
     return contrato

@@ -846,3 +846,46 @@ class ApiAssinaturaTests(CenarioContrato, APITestCase):
         response = self.assinar(self.gestor, contrato=segundo)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("já tem um contrato assinado", str(response.data))
+
+
+class TravaDaSituacaoManualTests(CenarioContrato, APITestCase):
+    """Com contrato assinado, a situação do imóvel não muda à mão (altera o mudar_situacao da W08)."""
+
+    def setUp(self):
+        self.montar_cenario()
+        self.contrato = salvar_contrato(self.novo_contrato(), self.gestor)
+
+    def test_com_contrato_assinado_a_situacao_nao_muda_a_mao(self):
+        assinar_contrato(self.contrato, self.gestor, ONTEM)
+        self.casa.refresh_from_db()
+        with self.assertRaises(ValidationError) as erro:
+            self.casa.mudar_situacao(Imovel.Situacao.DISPONIVEL, self.gestor, "voltar pra vitrine")
+        self.assertIn(f"contrato assinado (#{self.contrato.pk})", str(erro.exception))
+        self.casa.refresh_from_db()
+        self.assertEqual(self.casa.situacao, Imovel.Situacao.VENDIDO)
+        self.assertEqual(HistoricoSituacao.objects.filter(imovel=self.casa).count(), 1)
+
+    def test_contrato_em_rascunho_nao_trava(self):
+        self.casa.mudar_situacao(Imovel.Situacao.RESERVADO, self.gestor, "Sinal pago")
+        self.casa.refresh_from_db()
+        self.assertEqual(self.casa.situacao, Imovel.Situacao.RESERVADO)
+
+    def test_tela_da_w08_mostra_o_motivo(self):
+        assinar_contrato(self.contrato, self.gestor, ONTEM)
+        self.client.force_login(self.gestor)
+        response = self.client.post(
+            reverse("imoveis:gestao_imovel_situacao", args=[self.casa.pk]),
+            {"situacao": "DISPONIVEL", "observacao": ""},
+        )
+        self.assertContains(response, "não pode ser mudada à mão")
+        self.casa.refresh_from_db()
+        self.assertEqual(self.casa.situacao, Imovel.Situacao.VENDIDO)
+
+    def test_api_da_w08_recusa(self):
+        assinar_contrato(self.contrato, self.gestor, ONTEM)
+        self.client.force_authenticate(self.gestor)
+        response = self.client.post(
+            reverse("gestao-imovel-situacao", args=[self.casa.pk]), {"situacao": "DISPONIVEL"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("não pode ser mudada à mão", str(response.data))
