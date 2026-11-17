@@ -279,6 +279,17 @@ input[type="number"] {
   background: #17703c;
 }
 
+/* W11: os botões de contato são formulários (POST), um por canal */
+.botoes-contato {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.botoes-contato button {
+  width: 100%;
+}
+
 /* Pessoas (corretor) e perfis */
 
 .pessoa {

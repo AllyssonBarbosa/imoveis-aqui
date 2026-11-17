@@ -5,16 +5,21 @@ imoveis/vitrine.py (os mesmos da API), e os dados chegam aos templates já
 passados pelos serializers públicos da W09 — assim o template nem recebe
 proprietário, código interno ou documento, e o site mostra exatamente o
 que o app mostra.
+
+Contato (W11): os botões da página do imóvel não levam o link pronto. Eles
+enviam um POST para /imovel/<id>/contato/, que grava o contato e só então
+redireciona para o WhatsApp, o telefone ou o e-mail (ver contatos/servicos.py).
 """
 
-from urllib.parse import urlencode
-
 from django.core.paginator import Paginator
+from django.http import HttpResponseBadRequest, HttpResponseRedirect
 from django.shortcuts import get_object_or_404, render
+from django.urls import reverse
+from django.views.decorators.http import require_POST
 
 from contas.api.serializers import CorretorPublicoSerializer
 from contas.models import Usuario
-from core.validators import somente_digitos
+from contatos.servicos import CanalIndisponivel, canais_disponiveis, link_whatsapp, registrar_contato
 from empresas.api.serializers import EmpresaPublicaSerializer
 from empresas.models import Empresa
 from imoveis.api.serializers import ImovelVitrineDetalheSerializer, ImovelVitrineSerializer
@@ -55,14 +60,10 @@ def _paginar(request, imoveis):
     return pagina, cartoes
 
 
-def link_whatsapp(numero, mensagem):
-    """Link do wa.me. Número sem o 55 (DDD + número, até 11 dígitos) ganha o código do Brasil."""
-    digitos = somente_digitos(numero or "")
-    if not digitos:
-        return None
-    if len(digitos) <= 11:
-        digitos = f"55{digitos}"
-    return f"https://wa.me/{digitos}?{urlencode({'text': mensagem})}"
+class RedirecionarContato(HttpResponseRedirect):
+    """Redirecionamento que aceita tel: e mailto: além do https (o padrão do Django recusa)."""
+
+    allowed_schemes = ["https", "tel", "mailto"]
 
 
 def inicio(request):
@@ -116,21 +117,35 @@ def imovel(request, pk):
     )
     dados = ImovelVitrineDetalheSerializer(objeto, context={"request": request}).data
 
-    # corretor desativado não recebe contato (W02): o botão chama a empresa dona do imóvel
-    corretor = dados["corretor_responsavel"]
-    numero = corretor["whatsapp"] if corretor else objeto.empresa.whatsapp
-    mensagem = (
-        f'Olá! Vi no Imóveis Aqui o imóvel "{dados["titulo"]}" e gostaria de mais informações. '
-        f"{request.build_absolute_uri()}"
-    )
+    # só os nomes dos canais que têm destino; o link em si (com o código interno
+    # do imóvel na mensagem) só é montado no POST de contato, nunca vai para o HTML
+    canais = canais_disponiveis(objeto)
 
     return _renderizar(request, "site_publico/imovel.html", {
         "imovel": dados,
-        "corretor": corretor,
+        "corretor": dados["corretor_responsavel"],
         "empresa_id": objeto.empresa_id,
         "empresa_nome": objeto.empresa.razao_social_ou_nome,
-        "whatsapp": link_whatsapp(numero, mensagem),
+        "canais": canais,
     })
+
+
+@require_POST
+def contato(request, pk):
+    """Grava o contato e redireciona para o canal escolhido (W11).
+
+    POST e não GET: robôs, pré-carregamento do navegador e prévias de link
+    fazem GET sozinhos — só um clique de verdade envia o formulário.
+    """
+    objeto = get_object_or_404(
+        imoveis_da_vitrine().select_related("empresa", "corretor_responsavel__empresa"), pk=pk
+    )
+    url_do_anuncio = request.build_absolute_uri(reverse("site_publico:imovel", args=[objeto.pk]))
+    try:
+        _, link = registrar_contato(objeto, request.POST.get("canal"), url_do_anuncio)
+    except CanalIndisponivel as erro:
+        return HttpResponseBadRequest(str(erro))
+    return RedirecionarContato(link)
 
 
 def empresa(request, pk):

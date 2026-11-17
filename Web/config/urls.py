@@ -8,13 +8,16 @@ urlpatterns = [
     path('painel/', include('contas.urls')),
     path('painel/proprietarios/', include('proprietarios.urls')),
     path('painel/imoveis/', include('imoveis.urls')),
+    path('painel/contatos/', include('contatos.urls')),
     path('api/', include('contas.api.urls')),
     path('api/', include('proprietarios.api.urls')),
     path('api/', include('imoveis.api.urls')),
+    path('api/', include('contatos.api.urls')),
     path('api/publico/', include('contas.api.urls_publico')),
     path('api/publico/', include('empresas.api.urls_publico')),
     path('api/publico/', include('localizacao.api.urls_publico')),
     path('api/publico/', include('imoveis.api.urls_publico')),
+    path('api/publico/', include('contatos.api.urls_publico')),
     # site público (vitrine sem login) — por último, porque ocupa a raiz do site
     path('', include('site_publico.urls')),
 ]
