@@ -7,7 +7,7 @@ from clientes.models import Cliente
 from contas.models import Usuario
 from imoveis.models import Imovel
 
-from ..models import Contrato, DocumentoContrato, Parcela
+from ..models import Baixa, Contrato, DocumentoContrato, Parcela
 
 
 def erros_para_api(erro):
@@ -21,9 +21,15 @@ def erros_para_api(erro):
 
 
 class ParcelaSerializer(serializers.ModelSerializer):
+    """Parcela com o que já foi pago — calculado pelas baixas, nunca gravado."""
+
+    total_pago = serializers.DecimalField(source="valor_ja_pago", max_digits=14, decimal_places=2, read_only=True)
+    saldo = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    paga = serializers.BooleanField(read_only=True)
+
     class Meta:
         model = Parcela
-        fields = ["id", "numero", "vencimento", "valor"]
+        fields = ["id", "numero", "vencimento", "valor", "total_pago", "saldo", "paga"]
         read_only_fields = fields
 
 
@@ -127,3 +133,44 @@ class ContratoSerializer(serializers.ModelSerializer):
 
 class AssinaturaSerializer(serializers.Serializer):
     data_assinatura = serializers.DateField()
+
+
+class BaixaSerializer(serializers.ModelSerializer):
+    """Baixa de parcela. O comprovante entra no envio (multipart), mas nunca sai como URL:
+    o download é pela ação `comprovante`, que confere empresa e perfil."""
+
+    comprovante = serializers.FileField(write_only=True, help_text="PDF, JPG ou PNG de até 10MB.")
+    registrada_por = serializers.CharField(source="registrada_por.nome", read_only=True)
+    url_comprovante = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Baixa
+        fields = [
+            "id", "parcela", "data_pagamento", "valor_pago", "forma", "comprovante", "observacao",
+            "registrada_por", "registrada_em", "url_comprovante",
+        ]
+        read_only_fields = ["id", "registrada_por", "registrada_em"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get("request")
+        if request is not None and request.user.is_authenticated and "parcela" in self.fields:
+            from ..servicos import parcelas_visiveis_para
+
+            # parcela de outra empresa cai em "não existe", sem revelar que existe
+            self.fields["parcela"].queryset = parcelas_visiveis_para(request.user)
+
+    def get_url_comprovante(self, baixa):
+        from django.urls import reverse
+
+        url = reverse("baixa-comprovante", args=[baixa.pk])
+        request = self.context.get("request")
+        return request.build_absolute_uri(url) if request else url
+
+    def create(self, validated_data):
+        from ..servicos import registrar_baixa
+
+        try:
+            return registrar_baixa(Baixa(**validated_data), self.context["request"].user)
+        except DjangoValidationError as erro:
+            raise erros_para_api(erro)

@@ -69,18 +69,18 @@ def extensao_pelo_conteudo(arquivo):
     return {"JPEG": ".jpg", "PNG": ".png"}.get(formato, ".bin")
 
 
-def _caminho(instancia, pasta):
+def _caminho(instancia, arquivo, pasta):
     """contratos/<empresa>/<pasta>/<uuid>.<ext> — nada no nome identifica o cliente."""
-    extensao = extensao_pelo_conteudo(instancia.arquivo.file)
+    extensao = extensao_pelo_conteudo(arquivo.file)
     return f"contratos/{instancia.empresa_id}/{pasta}/{uuid.uuid4().hex}{extensao}"
 
 
 def caminho_documento(instancia, nome_original):
-    return _caminho(instancia, "documentos")
+    return _caminho(instancia, instancia.arquivo, "documentos")
 
 
 def caminho_comprovante(instancia, nome_original):
-    return _caminho(instancia, "comprovantes")
+    return _caminho(instancia, instancia.comprovante, "comprovantes")
 
 
 def responder_download(campo_arquivo, nome_para_download):

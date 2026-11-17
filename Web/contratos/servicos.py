@@ -3,6 +3,7 @@
 - contratos_visiveis_para(): quem enxerga qual contrato.
 - salvar_contrato(): grava o contrato e gera (ou gera de novo) as parcelas.
 - assinar_contrato(): marca a assinatura e tira o imóvel da vitrine.
+- registrar_baixa(): grava um pagamento de parcela, com comprovante.
 """
 
 from django.core.exceptions import ValidationError
@@ -13,7 +14,7 @@ from contas.models import Usuario
 from imoveis.models import Imovel
 
 from .calculos import valores_das_parcelas, vencimentos
-from .models import Contrato, Parcela
+from .models import Baixa, Contrato, Parcela
 
 
 def contratos_visiveis_para(usuario):
@@ -31,6 +32,16 @@ def contratos_visiveis_para(usuario):
     if usuario.perfil == Usuario.Perfil.CORRETOR:
         return contratos.filter(corretor=usuario)
     return contratos.none()
+
+
+def parcelas_visiveis_para(usuario):
+    """Parcelas dos contratos que o usuário pode ver (mesma regra de empresa e perfil)."""
+    return Parcela.objects.filter(contrato__in=contratos_visiveis_para(usuario))
+
+
+def baixas_visiveis_para(usuario):
+    """Baixas das parcelas que o usuário pode ver (o corretor vê as dos contratos dele)."""
+    return Baixa.objects.filter(parcela__contrato__in=contratos_visiveis_para(usuario))
 
 
 def calcular_parcelas(contrato):
@@ -172,3 +183,25 @@ def assinar_contrato(contrato, usuario, data_assinatura):
         pelo_contrato=True,
     )
     return contrato
+
+
+@transaction.atomic
+def registrar_baixa(baixa, usuario):
+    """Grava um pagamento de parcela (critério 4).
+
+    - só parcela de contrato assinado (no rascunho as parcelas ainda podem
+      ser geradas de novo, então não faz sentido pagar);
+    - trava a linha da parcela: duas baixas ao mesmo tempo ficam em fila;
+    - várias baixas por parcela, valor parcial ou a mais: tudo aceito.
+      A parcela fica paga quando a soma cobre o valor (Parcela.paga);
+    - a empresa é sempre a da parcela, e quem registrou é o usuário logado.
+    """
+    parcela = Parcela.objects.select_for_update().select_related("contrato").get(pk=baixa.parcela_id)
+    if not parcela.contrato.assinado:
+        raise ValidationError("Só dá para dar baixa em parcela de contrato assinado.")
+    baixa.parcela = parcela
+    baixa.empresa_id = parcela.empresa_id
+    baixa.registrada_por = usuario
+    baixa.full_clean()
+    baixa.save()
+    return baixa

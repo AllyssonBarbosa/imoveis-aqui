@@ -17,4 +17,10 @@ urlpatterns = [
     path(
         "<int:pk>/documentos/<int:documento_id>/excluir/", views.documento_excluir, name="documento_excluir"
     ),
+    path("<int:pk>/parcelas/<int:parcela_id>/", views.ParcelaDetailView.as_view(), name="parcela_detail"),
+    path(
+        "<int:pk>/parcelas/<int:parcela_id>/baixas/<int:baixa_id>/comprovante/",
+        views.comprovante_baixar,
+        name="comprovante_baixar",
+    ),
 ]

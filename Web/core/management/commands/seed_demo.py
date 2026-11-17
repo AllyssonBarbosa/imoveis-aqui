@@ -1,13 +1,14 @@
 from decimal import Decimal
 
+from django.core.files.base import ContentFile
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from clientes.models import Cliente
 from contas.models import Usuario
 from contratos.calculos import somar_meses
-from contratos.models import Contrato
-from contratos.servicos import assinar_contrato, salvar_contrato
+from contratos.models import Baixa, Contrato
+from contratos.servicos import assinar_contrato, registrar_baixa, salvar_contrato
 from empresas.models import Empresa
 from imoveis.models import Caracteristica, Imovel
 from localizacao.models import Cidade
@@ -114,3 +115,25 @@ class Command(BaseCommand):
             )
             # assinado no dia do início: o imóvel fica "vendido" e fora da vitrine
             assinar_contrato(contrato, gestor, contrato.data_inicio)
+            self._baixas_de_exemplo(contrato, gestor)
+
+    def _baixas_de_exemplo(self, contrato, gestor):
+        """Parcela 1 paga no vencimento; parcela 2 paga pela metade.
+
+        Assim o painel mostra uma parcela paga, uma com saldo e — a partir da
+        etapa 6 — as vencidas sem baixa completa como atrasadas.
+        """
+        primeira, segunda = contrato.parcelas.order_by("numero")[:2]
+        pagamentos = [
+            (primeira, primeira.valor, Baixa.Forma.PIX),
+            (segunda, (segunda.valor / 2).quantize(Decimal("0.01")), Baixa.Forma.BOLETO),
+        ]
+        for parcela, valor, forma in pagamentos:
+            registrar_baixa(
+                Baixa(
+                    parcela=parcela, data_pagamento=parcela.vencimento, valor_pago=valor, forma=forma,
+                    comprovante=ContentFile(b"%PDF-1.4 comprovante de demonstracao", name="comprovante.pdf"),
+                    observacao="Baixa de demonstração criada pelo seed_demo.",
+                ),
+                gestor,
+            )

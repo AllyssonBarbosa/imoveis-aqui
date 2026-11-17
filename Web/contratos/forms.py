@@ -3,7 +3,7 @@ from django import forms
 from contas.models import Usuario
 from imoveis.models import Imovel
 
-from .models import Contrato, DocumentoContrato
+from .models import Baixa, Contrato, DocumentoContrato
 
 
 def campo_de_data(rotulo, obrigatorio=True, ajuda=""):
@@ -105,3 +105,15 @@ class DocumentoContratoForm(forms.ModelForm):
         model = DocumentoContrato
         fields = ["tipo", "descricao", "arquivo"]
         help_texts = {"arquivo": "PDF, JPG ou PNG de até 10MB."}
+
+
+class BaixaForm(forms.ModelForm):
+    data_pagamento = campo_de_data("Data do pagamento")
+
+    class Meta:
+        model = Baixa
+        fields = ["data_pagamento", "valor_pago", "forma", "comprovante", "observacao"]
+        help_texts = {
+            "valor_pago": "Pode ser parcial ou a mais. A parcela fica paga quando a soma cobre o valor.",
+            "comprovante": "PDF, JPG ou PNG de até 10MB. Obrigatório.",
+        }

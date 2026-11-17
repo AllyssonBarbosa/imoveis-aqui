@@ -104,7 +104,7 @@
     <h2>Parcelas</h2>
     <table>
         <thead>
-            <tr><th>Nº</th><th>Vencimento</th><th>Valor</th></tr>
+            <tr><th>Nº</th><th>Vencimento</th><th>Valor</th><th>Pago</th><th>Saldo</th><th></th></tr>
         </thead>
         <tbody>
             {% for parcela in parcelas %}
@@ -112,11 +112,14 @@
                 <td>{{ parcela.numero }}</td>
                 <td>{{ parcela.vencimento|date:"d/m/Y" }}</td>
                 <td>R$ {{ parcela.valor|floatformat:"2g" }}</td>
+                <td>R$ {{ parcela.total_pago|floatformat:"2g" }}</td>
+                <td>R$ {{ parcela.saldo|floatformat:"2g" }}</td>
+                <td><a href="{% url 'contratos:parcela_detail' contrato.pk parcela.pk %}">{% if eh_gestor and contrato.assinado and not parcela.paga %}dar baixa{% else %}ver{% endif %}</a></td>
             </tr>
             {% endfor %}
         </tbody>
         <tfoot>
-            <tr><th colspan="2">Total</th><th>R$ {{ total_parcelas|floatformat:"2g" }}</th></tr>
+            <tr><th colspan="2">Total</th><th>R$ {{ total_parcelas|floatformat:"2g" }}</th><th colspan="3"></th></tr>
         </tfoot>
     </table>
 </div>

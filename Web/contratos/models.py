@@ -3,11 +3,14 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.models import DecimalField, OuterRef, Subquery, Sum, Value
+from django.db.models.functions import Coalesce
+from django.utils import timezone
 
 from core.models import EmpresaOwnedModel
 from core.validators import validar_documento
 
-from .arquivos import armazenamento_privado, caminho_documento
+from .arquivos import armazenamento_privado, caminho_comprovante, caminho_documento
 from .calculos import meses_de_vigencia
 
 LIMITE_DE_PARCELAS = 600  # 50 anos — acima disso é quase certo erro de digitação
@@ -203,6 +206,27 @@ class Contrato(EmpresaOwnedModel):
             )
 
 
+DINHEIRO = DecimalField(max_digits=14, decimal_places=2)
+
+
+class ParcelaQuerySet(models.QuerySet):
+    def com_pagamentos(self):
+        """Acrescenta `total_pago` (soma das baixas) a cada parcela, numa consulta só.
+
+        Usa subconsulta (e não um JOIN com as baixas) para a soma não se
+        multiplicar quando outra anotação for somada depois.
+        """
+        soma = (
+            Baixa.objects.filter(parcela=OuterRef("pk"))
+            .values("parcela")
+            .annotate(total=Sum("valor_pago"))
+            .values("total")
+        )
+        return self.annotate(
+            total_pago=Coalesce(Subquery(soma, output_field=DINHEIRO), Value(Decimal("0")), output_field=DINHEIRO)
+        )
+
+
 class Parcela(EmpresaOwnedModel):
     """Uma parcela do contrato, gerada pelo servidor: número, vencimento e valor.
 
@@ -216,6 +240,8 @@ class Parcela(EmpresaOwnedModel):
     numero = models.PositiveSmallIntegerField("número")
     vencimento = models.DateField()
     valor = models.DecimalField(max_digits=12, decimal_places=2)
+
+    objects = ParcelaQuerySet.as_manager()
 
     class Meta:
         verbose_name = "parcela"
@@ -236,6 +262,22 @@ class Parcela(EmpresaOwnedModel):
     def save(self, *args, **kwargs):
         self.empresa_id = self.contrato.empresa_id
         super().save(*args, **kwargs)
+
+    def valor_ja_pago(self):
+        """Soma das baixas. Usa a anotação de com_pagamentos() quando houver (sem consulta extra)."""
+        if hasattr(self, "total_pago"):
+            return self.total_pago
+        return self.baixas.aggregate(total=Sum("valor_pago"))["total"] or Decimal("0")
+
+    @property
+    def saldo(self):
+        """Quanto falta pagar — nunca negativo (pagamento a mais não vira crédito)."""
+        return max(self.valor - self.valor_ja_pago(), Decimal("0"))
+
+    @property
+    def paga(self):
+        """Paga quando a soma das baixas cobre o valor (aceita parcial e a mais)."""
+        return self.valor_ja_pago() >= self.valor
 
 
 class DocumentoContrato(EmpresaOwnedModel):
@@ -281,3 +323,66 @@ class DocumentoContrato(EmpresaOwnedModel):
         self.empresa_id = self.contrato.empresa_id
         super().save(*args, **kwargs)
 
+
+
+class Baixa(EmpresaOwnedModel):
+    """Registro de um pagamento de parcela, com comprovante (W12, critério 4).
+
+    Uma parcela pode ter várias baixas (pagamento parcial, ou em partes);
+    ela está paga quando a soma cobre o valor. Pagamento a mais é aceito.
+    Não existe campo "paga" gravado: é sempre calculado pelas baixas.
+
+    Baixa não é editada nem apagada (é registro financeiro). O comprovante
+    fica na pasta privada, como os documentos do contrato.
+    """
+
+    class Forma(models.TextChoices):
+        PIX = "PIX", "Pix"
+        BOLETO = "BOLETO", "Boleto"
+        TRANSFERENCIA = "TRANSFERENCIA", "Transferência"
+        DINHEIRO = "DINHEIRO", "Dinheiro"
+        CARTAO = "CARTAO", "Cartão"
+        CHEQUE = "CHEQUE", "Cheque"
+
+    # PROTECT: parcela com baixa não some (as parcelas só são geradas de novo no rascunho,
+    # e rascunho não aceita baixa)
+    parcela = models.ForeignKey(Parcela, on_delete=models.PROTECT, related_name="baixas")
+    data_pagamento = models.DateField("data do pagamento")
+    valor_pago = models.DecimalField(
+        "valor pago", max_digits=12, decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"), "O valor pago precisa ser maior que zero.")],
+    )
+    forma = models.CharField("forma de pagamento", max_length=15, choices=Forma.choices)
+    comprovante = models.FileField(
+        storage=armazenamento_privado, upload_to=caminho_comprovante, max_length=200,
+        validators=[validar_documento],
+    )
+    observacao = models.CharField("observação", max_length=200, blank=True)
+    registrada_por = models.ForeignKey(
+        "contas.Usuario", on_delete=models.PROTECT, editable=False, related_name="baixas_registradas"
+    )
+    registrada_em = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "baixa"
+        verbose_name_plural = "baixas"
+        ordering = ["data_pagamento", "id"]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(valor_pago__gt=0), name="baixa_valor_pago_positivo"),
+        ]
+
+    def __str__(self):
+        return f"Baixa de R$ {self.valor_pago} na {self.parcela}"
+
+    def clean(self):
+        super().clean()
+        if self.data_pagamento and self.data_pagamento > timezone.localdate():
+            raise ValidationError({"data_pagamento": "A data do pagamento não pode estar no futuro."})
+
+    @property
+    def nome_para_download(self):
+        return f"comprovante-contrato-{self.parcela.contrato_id}-parcela-{self.parcela.numero}-{self.pk}"
+
+    def save(self, *args, **kwargs):
+        self.empresa_id = self.parcela.empresa_id
+        super().save(*args, **kwargs)

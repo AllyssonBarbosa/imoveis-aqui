@@ -567,15 +567,29 @@ class ApiContratoTests(CenarioContrato, APITestCase):
 
 class SeedDemoTests(TestCase):
     def test_seed_cria_cliente_e_contrato_com_parcelas_sem_duplicar(self):
+        import shutil
+        import tempfile
         from io import StringIO
+        from pathlib import Path
 
         from django.core.management import call_command
+        from django.test import override_settings
 
         from clientes.models import Cliente
 
-        for _ in range(2):
-            call_command("seed_demo", stdout=StringIO())
+        from .models import Baixa
+
+        pasta = tempfile.mkdtemp()  # os comprovantes do seed não vão para a pasta de verdade
+        self.addCleanup(shutil.rmtree, pasta, ignore_errors=True)
+        with override_settings(ARQUIVOS_PRIVADOS_ROOT=Path(pasta)):
+            for _ in range(2):
+                call_command("seed_demo", stdout=StringIO())
         contrato = Contrato.objects.get()
+        self.assertEqual(Baixa.objects.count(), 2)
+        primeira, segunda = contrato.parcelas.com_pagamentos()[:2]
+        self.assertTrue(primeira.paga)
+        self.assertFalse(segunda.paga)
+        self.assertGreater(segunda.total_pago, 0)
         self.assertEqual(Cliente.objects.count(), 1)
         self.assertEqual(contrato.cliente.nome_razao_social, "João Comprador")
         self.assertEqual(contrato.parcelas.count(), 60)

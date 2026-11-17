@@ -13,9 +13,9 @@ from contas.views import CorretorOuGestorRequiredMixin, GestorRequiredMixin
 from imoveis.views import gestor_required
 
 from .arquivos import responder_download
-from .forms import AssinaturaForm, ContratoForm, DocumentoContratoForm, FiltroContratoForm
-from .models import Contrato
-from .servicos import assinar_contrato, contratos_visiveis_para, salvar_contrato
+from .forms import AssinaturaForm, BaixaForm, ContratoForm, DocumentoContratoForm, FiltroContratoForm
+from .models import Baixa, Contrato
+from .servicos import assinar_contrato, contratos_visiveis_para, registrar_baixa, salvar_contrato
 
 
 class ContratoListView(CorretorOuGestorRequiredMixin, ListView):
@@ -46,7 +46,7 @@ class ContratoDetailView(CorretorOuGestorRequiredMixin, View):
             ),
             pk=pk,
         )
-        parcelas = contrato.parcelas.all()
+        parcelas = contrato.parcelas.com_pagamentos()
         return render(request, "contratos/contrato_detail.html", {
             "contrato": contrato,
             "parcelas": parcelas,
@@ -162,3 +162,61 @@ def documento_excluir(request, pk, documento_id):
     documento.delete()
     messages.success(request, "Documento removido.")
     return redirect("contratos:contrato_detail", pk=pk)
+
+
+# --- parcela e baixas (critério 4) ------------------------------------------------
+
+
+class ParcelaDetailView(CorretorOuGestorRequiredMixin, View):
+    """Parcela com as baixas. GET: gestor e corretor do contrato. POST (registrar baixa): só o gestor."""
+
+    template_name = "contratos/parcela_detail.html"
+
+    def _parcela(self, pk, parcela_id):
+        contrato = _contrato_visivel(self.request, pk)
+        return get_object_or_404(contrato.parcelas.com_pagamentos().select_related("contrato"), pk=parcela_id)
+
+    def _tela(self, parcela, form):
+        eh_gestor = self.request.user.perfil == Usuario.Perfil.GESTOR
+        return render(self.request, self.template_name, {
+            "contrato": parcela.contrato,
+            "parcela": parcela,
+            "baixas": parcela.baixas.select_related("registrada_por"),
+            "eh_gestor": eh_gestor,
+            "pode_dar_baixa": eh_gestor and parcela.contrato.assinado,
+            "form": form,
+        })
+
+    def get(self, request, pk, parcela_id):
+        parcela = self._parcela(pk, parcela_id)
+        form = BaixaForm(initial={"data_pagamento": timezone.localdate(), "valor_pago": parcela.saldo or None})
+        return self._tela(parcela, form)
+
+    def post(self, request, pk, parcela_id):
+        parcela = self._parcela(pk, parcela_id)  # de fora: 404 antes de checar o perfil
+        if request.user.perfil != Usuario.Perfil.GESTOR:
+            raise PermissionDenied
+        form = BaixaForm(request.POST, request.FILES, instance=Baixa(parcela=parcela))
+        form.instance.empresa_id = parcela.empresa_id
+        form.instance.registrada_por = request.user
+        if form.is_valid():
+            try:
+                registrar_baixa(form.save(commit=False), request.user)
+            except ValidationError as erro:
+                form._update_errors(erro)
+            else:
+                messages.success(request, "Baixa registrada.")
+                return redirect("contratos:parcela_detail", pk=pk, parcela_id=parcela_id)
+        return self._tela(parcela, form)
+
+
+@login_required
+def comprovante_baixar(request, pk, parcela_id, baixa_id):
+    """Gestor da empresa ou corretor do contrato. O comprovante só sai por aqui."""
+    if request.user.perfil not in (Usuario.Perfil.GESTOR, Usuario.Perfil.CORRETOR):
+        raise PermissionDenied
+    contrato = _contrato_visivel(request, pk)
+    baixa = get_object_or_404(
+        Baixa.objects.select_related("parcela"), pk=baixa_id, parcela_id=parcela_id, parcela__contrato=contrato
+    )
+    return responder_download(baixa.comprovante, baixa.nome_para_download)

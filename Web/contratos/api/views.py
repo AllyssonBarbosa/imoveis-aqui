@@ -1,4 +1,5 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Prefetch
 from rest_framework import mixins, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -8,9 +9,11 @@ from core.mixins import EmpresaScopedQuerySetMixin
 from core.permissions import EhGestor, PertenceAUmaEmpresa
 
 from ..arquivos import responder_download
-from ..models import Contrato, DocumentoContrato
-from ..servicos import assinar_contrato, contratos_visiveis_para
-from .serializers import AssinaturaSerializer, ContratoSerializer, DocumentoContratoSerializer, erros_para_api
+from ..models import Baixa, Contrato, DocumentoContrato, Parcela
+from ..servicos import assinar_contrato, baixas_visiveis_para, contratos_visiveis_para
+from .serializers import (
+    AssinaturaSerializer, BaixaSerializer, ContratoSerializer, DocumentoContratoSerializer, erros_para_api,
+)
 
 
 class ContratoViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
@@ -24,7 +27,7 @@ class ContratoViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
 
     serializer_class = ContratoSerializer
     queryset = Contrato.objects.select_related("imovel", "cliente", "corretor").prefetch_related(
-        "parcelas", "documentos__enviado_por"
+        Prefetch("parcelas", queryset=Parcela.objects.com_pagamentos()), "documentos__enviado_por"
     )
     http_method_names = ["get", "post", "put", "patch", "head", "options"]
 
@@ -101,3 +104,40 @@ class DocumentoContratoViewSet(
     def baixar(self, request, pk=None):
         documento = self.get_object()  # já filtrado pela empresa e pelo perfil
         return responder_download(documento.arquivo, documento.nome_para_download)
+
+
+class BaixaViewSet(
+    EmpresaScopedQuerySetMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.CreateModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Baixas de parcela (?parcela=<id> ou ?contrato=<id>). Sem edição nem exclusão.
+
+    - listar, ver e baixar o comprovante: gestor (empresa) e corretor (só dos contratos dele);
+    - registrar (multipart, com comprovante): só o gestor.
+    """
+
+    serializer_class = BaixaSerializer
+    parser_classes = [MultiPartParser, FormParser]
+    queryset = Baixa.objects.select_related("registrada_por", "parcela")
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve", "comprovante"):
+            return [PertenceAUmaEmpresa()]
+        return [EhGestor()]
+
+    def get_queryset(self):
+        # empresa (mixin) + só baixas de contratos que o usuário pode ver
+        queryset = super().get_queryset().filter(pk__in=baixas_visiveis_para(self.request.user))
+        for parametro, campo in (("parcela", "parcela_id"), ("contrato", "parcela__contrato_id")):
+            valor = self.request.query_params.get(parametro)
+            if valor and valor.isdigit():
+                queryset = queryset.filter(**{campo: int(valor)})
+        return queryset
+
+    @action(detail=True, methods=["get"])
+    def comprovante(self, request, pk=None):
+        baixa = self.get_object()  # já filtrado pela empresa e pelo perfil
+        return responder_download(baixa.comprovante, baixa.nome_para_download)
