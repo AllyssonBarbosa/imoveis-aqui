@@ -16,6 +16,7 @@
         <p><a class="botao secundario" href="{% url 'contatos:contato_list' %}">Contatos da empresa</a></p>
         <p><a class="botao secundario" href="{% url 'clientes:cliente_list' %}">Clientes</a></p>
         <p><a class="botao secundario" href="{% url 'contratos:contrato_list' %}">Contratos</a></p>
+        <p><a class="botao secundario" href="{% url 'relatorios:index' %}">Relatórios</a></p>
     {% endif %}
     {% if user.perfil == "CORRETOR" %}
         <p><a class="botao secundario" href="{% url 'proprietarios:proprietario_list' %}">Proprietários</a></p>

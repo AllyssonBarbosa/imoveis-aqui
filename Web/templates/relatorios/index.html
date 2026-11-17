@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block titulo %}Relatórios — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+<div class="cabecalho-pagina">
+    <h1>Relatórios</h1>
+</div>
+<p class="texto-suave">Os números são calculados na hora, só com os dados da sua empresa.</p>
+
+<div class="secao">
+    <h2><a href="{% url 'relatorios:acervo' %}">Acervo</a></h2>
+    <p>Quantos imóveis há em cada natureza (casa, apartamento, terreno, lote) e situação (disponível, reservado, vendido, alugado).</p>
+</div>
+<div class="secao">
+    <h2><a href="{% url 'relatorios:contatos' %}">Contatos por corretor</a></h2>
+    <p>Quantos contatos cada corretor recebeu num período e quantos ainda aguardam retorno.</p>
+</div>
+<div class="secao">
+    <h2><a href="{% url 'relatorios:parcelas' %}">Parcelas em atraso e a vencer</a></h2>
+    <p>Parcelas vencidas sem pagamento completo e as que vencem nos próximos dias.</p>
+</div>
+{% endblock %}

@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'proprietarios',
     'clientes',
     'contratos',
+    'relatorios',
     'imoveis',
     'contatos',
     'site_publico',

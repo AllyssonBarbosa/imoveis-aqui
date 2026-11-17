@@ -24,6 +24,7 @@ O app é uma tela sobre os dados: nenhuma regra de negócio é decidida nele —
 | `proprietarios` | `Proprietario` — dono do imóvel (PF/PJ), sem acesso ao sistema |
 | `clientes` | `Cliente` — quem compra ou aluga (PF/PJ, CPF/CNPJ e contato), sem acesso ao sistema e fora da vitrine (W12) |
 | `contratos` | `Contrato` (venda ou locação) e `Parcela`, gerada pelo servidor ao salvar: centavos que sobram na última parcela, vencimento no último dia em mês mais curto, locação com uma parcela por mês da vigência (W12). `DocumentoContrato` guarda os anexos na pasta privada `Web/arquivos_privados/` (fora de `media/`, sem URL; download só pela rota que confere empresa e perfil). `Baixa` registra cada pagamento de parcela com comprovante (também na pasta privada): várias baixas por parcela, parcial ou a mais; a parcela está paga quando a soma cobre o valor. A situação da parcela (paga, a vencer, atrasada — venceu antes de hoje e tem saldo — ou prevista, no rascunho) é calculada na consulta (`Parcela.objects.com_situacao(hoje)`, dia de São Paulo), nunca gravada |
+| `relatorios` | Sem tabelas: relatórios do gestor calculados na hora (acervo por natureza × situação, contatos por corretor no período e parcelas em atraso/a vencer), sempre só da empresa dele (W12) |
 | `imoveis` | `Caracteristica` (tabela geral do administrador), `Imovel` (parte comum do cadastro) e `FotoImovel` |
 | `contatos` | `Contato` — registro de que alguém procurou um imóvel (WhatsApp, telefone ou e-mail) e o retorno anotado (W11) |
 
@@ -146,6 +147,7 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `/painel/contratos/<id>/parcelas/<parcela>/` | Parcela com as baixas; `POST` registra baixa (data, valor pago, forma e comprovante; só contrato assinado) | ver: gestor e corretor do contrato; baixa: gestor |
 | `/painel/contratos/<id>/parcelas/<parcela>/baixas/<baixa>/comprovante/` | Baixa o comprovante (como anexo) | gestor e corretor do contrato |
 | `POST /painel/contratos/<id>/assinar/` | Assina o contrato (data da assinatura): o imóvel fica vendido/alugado, com histórico, e sai da vitrine; um só contrato assinado por imóvel | gestor |
+| `/painel/relatorios/` | Relatórios: `acervo/`, `contatos/?de=&ate=` (AAAA-MM-DD, dia de São Paulo) e `parcelas/?dias=30` (em atraso e a vencer nos próximos dias) | gestor |
 | `/painel/imoveis/` | Lista os imóveis da própria empresa | corretor |
 | `/painel/imoveis/novo/` | Cadastra a parte comum do imóvel | corretor |
 | `/painel/imoveis/<id>/` | Página do imóvel — endereço, fotos e botão de publicar | corretor |
@@ -163,6 +165,7 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `GET /api/parcelas/?contrato=&situacao=` | Parcelas com total pago, saldo, situação (`PAGA`, `A_VENCER`, `ATRASADA` ou `PREVISTA`) e dias em atraso, calculados pelo servidor (só leitura) | app — gestor (empresa) e corretor (contratos dele) |
 | `GET /api/baixas/<id>/comprovante/` | Baixa o comprovante, conferindo empresa e perfil | app, gestor e corretor do contrato |
 | `POST /api/contratos/<id>/assinar/` | Assina o contrato — corpo `{ "data_assinatura": "AAAA-MM-DD" }` | app, gestor |
+| `GET /api/relatorios/acervo/`, `GET /api/relatorios/contatos/?de=&ate=` e `GET /api/relatorios/parcelas/?dias=30` | Os mesmos relatórios do painel (dinheiro em texto, ex.: `"1234.50"`) | app, gestor |
 | `GET/POST /api/imoveis/` | Lista e cadastra imóveis da própria empresa | app, corretor |
 | `GET/PUT /api/imoveis/<id>/endereco/` | Lê/grava o endereço do imóvel (cidade, CEP, latitude, longitude) | app, corretor |
 | `POST /api/imoveis/<id>/publicar/` | Publica o imóvel — recusa se faltar cidade ou coordenada | app, corretor |
