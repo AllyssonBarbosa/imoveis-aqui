@@ -142,11 +142,11 @@
                 </ul>
                 {% endwith %}
             {% elif imovel.lote %}
-                {% with d=imovel.lote l=imovel.lote.loteamento %}
+                {% with d=imovel.lote l=imovel.lote.quadra.loteamento %}
                 <h2>Dados do lote</h2>
                 <div class="linha-valores">
                     <div class="valor-item"><span class="rotulo">Área</span><span class="valor">{{ d.area|floatformat:"-2" }} m²</span></div>
-                    <div class="valor-item"><span class="rotulo">Lote</span><span class="valor">{{ d.numero }} · quadra {{ d.quadra }}</span></div>
+                    <div class="valor-item"><span class="rotulo">Lote</span><span class="valor">{{ d.numero }} · quadra {{ d.quadra.identificacao }}</span></div>
                 </div>
                 <p>Frente {{ d.frente|floatformat:"-2" }} m · fundo {{ d.fundo|floatformat:"-2" }} m</p>
                 {% if d.entrada_minima or d.parcelas_maximas or d.condicoes_parcelamento %}

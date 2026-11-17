@@ -22,7 +22,6 @@ APARTAMENTO = Imovel.Natureza.APARTAMENTO
 CASA = Imovel.Natureza.CASA
 LOTE = Imovel.Natureza.LOTE
 TERRENO = Imovel.Natureza.TERRENO
-LOTE = Imovel.Natureza.LOTE
 
 IMOVEIS_POR_PAGINA = 20
 

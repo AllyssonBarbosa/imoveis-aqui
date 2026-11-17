@@ -6,7 +6,7 @@ from rest_framework import status
 from imoveis.models import Imovel
 from imoveis.tests import (
     VitrineBase, criar_corretor, criar_empresa, criar_endereco, criar_gestor, criar_imovel,
-    criar_proprietario,
+    criar_proprietario, publicar_lote_da_vitrine,
 )
 from imoveis.vitrine import ORDENACOES
 from localizacao.models import Cidade
@@ -170,6 +170,19 @@ class PaginaImovelTests(SiteBase):
         self.assertContains(response, "Dados do terreno")
         self.assertContains(response, "360 m²")
         self.assertContains(response, "Plano")
+
+    def test_lote_mostra_quadra_condicoes_e_loteamento(self):
+        imovel_lote, _ = publicar_lote_da_vitrine(self)
+        response = self.pagina("imovel", imovel_lote.pk)
+        self.assertContains(response, "Dados do lote")
+        self.assertContains(response, "7 · quadra B")
+        self.assertNotContains(response, "identificacao")  # a quadra não pode sair como dicionário
+        self.assertContains(response, "em até 120 parcelas")
+        self.assertContains(response, "Loteamento Jardim das Flores")
+        self.assertContains(response, "Incorporadora: Incorporadora Alfa")
+        self.assertContains(response, "<li>Asfalto</li>", html=True)
+        self.assertNotContains(response, "<li>Esgoto</li>", html=True)
+        self.assertContains(response, "Lazer: Praça e quadra poliesportiva")
 
     def test_rascunho_e_empresa_inativa_dao_404(self):
         self.assertEqual(self.pagina("imovel", self.rascunho.pk).status_code, status.HTTP_404_NOT_FOUND)
