@@ -10,9 +10,10 @@ from core.permissions import EhGestor, PertenceAUmaEmpresa
 
 from ..arquivos import responder_download
 from ..models import Baixa, Contrato, DocumentoContrato, Parcela
-from ..servicos import assinar_contrato, baixas_visiveis_para, contratos_visiveis_para
+from ..servicos import assinar_contrato, baixas_visiveis_para, contratos_visiveis_para, parcelas_visiveis_para
 from .serializers import (
-    AssinaturaSerializer, BaixaSerializer, ContratoSerializer, DocumentoContratoSerializer, erros_para_api,
+    AssinaturaSerializer, BaixaSerializer, ContratoSerializer, DocumentoContratoSerializer, ParcelaSerializer,
+    erros_para_api,
 )
 
 
@@ -27,7 +28,7 @@ class ContratoViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
 
     serializer_class = ContratoSerializer
     queryset = Contrato.objects.select_related("imovel", "cliente", "corretor").prefetch_related(
-        Prefetch("parcelas", queryset=Parcela.objects.com_pagamentos()), "documentos__enviado_por"
+        Prefetch("parcelas", queryset=Parcela.objects.com_situacao()), "documentos__enviado_por"
     )
     http_method_names = ["get", "post", "put", "patch", "head", "options"]
 
@@ -141,3 +142,34 @@ class BaixaViewSet(
     def comprovante(self, request, pk=None):
         baixa = self.get_object()  # já filtrado pela empresa e pelo perfil
         return responder_download(baixa.comprovante, baixa.nome_para_download)
+
+
+class ParcelaViewSet(EmpresaScopedQuerySetMixin, viewsets.ReadOnlyModelViewSet):
+    """Parcelas com a situação calculada pelo servidor (só leitura).
+
+    ?contrato=<id> e ?situacao=PAGA|A_VENCER|ATRASADA|PREVISTA.
+    Gestor vê as da empresa; corretor, só as dos contratos dele.
+    """
+
+    serializer_class = ParcelaSerializer
+    permission_classes = [PertenceAUmaEmpresa]
+    queryset = Parcela.objects.all()
+
+    def get_queryset(self):
+        queryset = (
+            super().get_queryset()
+            .filter(pk__in=parcelas_visiveis_para(self.request.user))
+            .com_situacao()
+            .order_by("vencimento", "contrato_id", "numero")
+        )
+        contrato = self.request.query_params.get("contrato")
+        if contrato and contrato.isdigit():
+            queryset = queryset.filter(contrato_id=int(contrato))
+        situacao = self.request.query_params.get("situacao")
+        if situacao:
+            if situacao not in Parcela.Situacao.values:
+                from rest_framework.exceptions import ValidationError
+
+                raise ValidationError({"situacao": f"Use uma destas: {', '.join(Parcela.Situacao.values)}."})
+            queryset = queryset.filter(situacao=situacao)
+        return queryset

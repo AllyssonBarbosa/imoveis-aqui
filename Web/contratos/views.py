@@ -1,7 +1,8 @@
+from decimal import Decimal
+
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db.models import Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views import View
@@ -14,7 +15,7 @@ from imoveis.views import gestor_required
 
 from .arquivos import responder_download
 from .forms import AssinaturaForm, BaixaForm, ContratoForm, DocumentoContratoForm, FiltroContratoForm
-from .models import Baixa, Contrato
+from .models import Baixa, Contrato, Parcela
 from .servicos import assinar_contrato, contratos_visiveis_para, registrar_baixa, salvar_contrato
 
 
@@ -46,11 +47,14 @@ class ContratoDetailView(CorretorOuGestorRequiredMixin, View):
             ),
             pk=pk,
         )
-        parcelas = contrato.parcelas.com_pagamentos()
+        parcelas = list(contrato.parcelas.com_situacao())
+        atrasadas = [p for p in parcelas if p.situacao == Parcela.Situacao.ATRASADA]
         return render(request, "contratos/contrato_detail.html", {
             "contrato": contrato,
             "parcelas": parcelas,
-            "total_parcelas": parcelas.aggregate(total=Sum("valor"))["total"] or 0,
+            "atrasadas": len(atrasadas),
+            "saldo_em_atraso": sum((p.saldo for p in atrasadas), Decimal("0")),
+            "total_parcelas": sum((p.valor for p in parcelas), Decimal("0")),
             "eh_gestor": request.user.perfil == Usuario.Perfil.GESTOR,
             "assinatura_form": AssinaturaForm(initial={"data_assinatura": timezone.localdate()}),
             "documentos": contrato.documentos.select_related("enviado_por"),
@@ -174,7 +178,7 @@ class ParcelaDetailView(CorretorOuGestorRequiredMixin, View):
 
     def _parcela(self, pk, parcela_id):
         contrato = _contrato_visivel(self.request, pk)
-        return get_object_or_404(contrato.parcelas.com_pagamentos().select_related("contrato"), pk=parcela_id)
+        return get_object_or_404(contrato.parcelas.com_situacao().select_related("contrato"), pk=parcela_id)
 
     def _tela(self, parcela, form):
         eh_gestor = self.request.user.perfil == Usuario.Perfil.GESTOR

@@ -23,7 +23,7 @@ O app é uma tela sobre os dados: nenhuma regra de negócio é decidida nele —
 | `contas` | `Usuario` customizado (login por e-mail), perfis administrador/gestor/corretor, login do painel e API de autenticação |
 | `proprietarios` | `Proprietario` — dono do imóvel (PF/PJ), sem acesso ao sistema |
 | `clientes` | `Cliente` — quem compra ou aluga (PF/PJ, CPF/CNPJ e contato), sem acesso ao sistema e fora da vitrine (W12) |
-| `contratos` | `Contrato` (venda ou locação) e `Parcela`, gerada pelo servidor ao salvar: centavos que sobram na última parcela, vencimento no último dia em mês mais curto, locação com uma parcela por mês da vigência (W12). `DocumentoContrato` guarda os anexos na pasta privada `Web/arquivos_privados/` (fora de `media/`, sem URL; download só pela rota que confere empresa e perfil). `Baixa` registra cada pagamento de parcela com comprovante (também na pasta privada): várias baixas por parcela, parcial ou a mais; a parcela está paga quando a soma cobre o valor — nada de "paga" gravado |
+| `contratos` | `Contrato` (venda ou locação) e `Parcela`, gerada pelo servidor ao salvar: centavos que sobram na última parcela, vencimento no último dia em mês mais curto, locação com uma parcela por mês da vigência (W12). `DocumentoContrato` guarda os anexos na pasta privada `Web/arquivos_privados/` (fora de `media/`, sem URL; download só pela rota que confere empresa e perfil). `Baixa` registra cada pagamento de parcela com comprovante (também na pasta privada): várias baixas por parcela, parcial ou a mais; a parcela está paga quando a soma cobre o valor. A situação da parcela (paga, a vencer, atrasada — venceu antes de hoje e tem saldo — ou prevista, no rascunho) é calculada na consulta (`Parcela.objects.com_situacao(hoje)`, dia de São Paulo), nunca gravada |
 | `imoveis` | `Caracteristica` (tabela geral do administrador), `Imovel` (parte comum do cadastro) e `FotoImovel` |
 | `contatos` | `Contato` — registro de que alguém procurou um imóvel (WhatsApp, telefone ou e-mail) e o retorno anotado (W11) |
 
@@ -140,7 +140,7 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `/painel/clientes/novo/` e `/painel/clientes/<id>/editar/` | Cadastra e edita cliente (CPF/CNPJ válido e telefone ou e-mail) | corretor e gestor |
 | `/painel/contratos/?tipo=&situacao=` | Lista os contratos | gestor (todos da empresa) e corretor (só os dele) |
 | `/painel/contratos/novo/` e `/painel/contratos/<id>/editar/` | Cadastra e edita o contrato; ao salvar, gera as parcelas (assinado: só observações) | gestor |
-| `/painel/contratos/<id>/` | Dados do contrato e todas as parcelas | gestor e corretor do contrato |
+| `/painel/contratos/<id>/` | Dados do contrato e todas as parcelas, com pago, saldo e situação (atrasadas em destaque) | gestor e corretor do contrato |
 | `POST /painel/contratos/<id>/documentos/` | Anexa documento ao contrato (PDF, JPG ou PNG até 10MB) | gestor |
 | `/painel/contratos/<id>/documentos/<doc>/baixar/` | Baixa o documento (como anexo) | gestor e corretor do contrato |
 | `/painel/contratos/<id>/parcelas/<parcela>/` | Parcela com as baixas; `POST` registra baixa (data, valor pago, forma e comprovante; só contrato assinado) | ver: gestor e corretor do contrato; baixa: gestor |
@@ -160,6 +160,7 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `GET/POST /api/documentos-contrato/?contrato=` e `DELETE /api/documentos-contrato/<id>/` | Documentos do contrato (envio em multipart, campo `arquivo`); a resposta nunca traz o endereço do arquivo | app — leitura: gestor e corretor do contrato; envio e exclusão: gestor |
 | `GET /api/documentos-contrato/<id>/baixar/` | Baixa o arquivo, conferindo empresa e perfil | app, gestor e corretor do contrato |
 | `GET/POST /api/baixas/?parcela=&contrato=` e `GET /api/baixas/<id>/` | Baixas de parcela (envio em multipart, campo `comprovante`); sem edição nem exclusão | app — leitura: gestor e corretor do contrato; registro: gestor |
+| `GET /api/parcelas/?contrato=&situacao=` | Parcelas com total pago, saldo, situação (`PAGA`, `A_VENCER`, `ATRASADA` ou `PREVISTA`) e dias em atraso, calculados pelo servidor (só leitura) | app — gestor (empresa) e corretor (contratos dele) |
 | `GET /api/baixas/<id>/comprovante/` | Baixa o comprovante, conferindo empresa e perfil | app, gestor e corretor do contrato |
 | `POST /api/contratos/<id>/assinar/` | Assina o contrato — corpo `{ "data_assinatura": "AAAA-MM-DD" }` | app, gestor |
 | `GET/POST /api/imoveis/` | Lista e cadastra imóveis da própria empresa | app, corretor |

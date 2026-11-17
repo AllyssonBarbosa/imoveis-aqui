@@ -26,10 +26,17 @@ class ParcelaSerializer(serializers.ModelSerializer):
     total_pago = serializers.DecimalField(source="valor_ja_pago", max_digits=14, decimal_places=2, read_only=True)
     saldo = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     paga = serializers.BooleanField(read_only=True)
+    # calculados pelo servidor (com_situacao) — o app só mostra, não decide atraso
+    situacao = serializers.CharField(read_only=True)
+    situacao_rotulo = serializers.CharField(read_only=True)
+    dias_em_atraso = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Parcela
-        fields = ["id", "numero", "vencimento", "valor", "total_pago", "saldo", "paga"]
+        fields = [
+            "id", "contrato", "numero", "vencimento", "valor", "total_pago", "saldo", "paga",
+            "situacao", "situacao_rotulo", "dias_em_atraso",
+        ]
         read_only_fields = fields
 
 

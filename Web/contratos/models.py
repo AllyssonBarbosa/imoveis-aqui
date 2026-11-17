@@ -3,7 +3,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
-from django.db.models import DecimalField, OuterRef, Subquery, Sum, Value
+from django.db.models import Case, CharField, DateField, DecimalField, F, OuterRef, Q, Subquery, Sum, Value, When
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
@@ -226,6 +226,37 @@ class ParcelaQuerySet(models.QuerySet):
             total_pago=Coalesce(Subquery(soma, output_field=DINHEIRO), Value(Decimal("0")), output_field=DINHEIRO)
         )
 
+    def com_situacao(self, hoje=None):
+        """Acrescenta `total_pago`, `situacao` e `referencia` (o "hoje" usado) — critério 5.
+
+        A situação é calculada na hora da consulta e nunca gravada:
+        - PAGA: a soma das baixas cobre o valor;
+        - PREVISTA: o contrato ainda é rascunho (nada vence antes de assinar);
+        - ATRASADA: venceu antes de hoje e ainda tem saldo;
+        - A_VENCER: vence hoje ou depois (vencer hoje ainda não é atraso).
+
+        `hoje` é o dia no fuso do projeto (America/Sao_Paulo); os testes passam
+        uma data fixa. Dá para filtrar: .com_situacao().filter(situacao="ATRASADA").
+        """
+        hoje = hoje or timezone.localdate()
+        S = Parcela.Situacao
+        return self.com_pagamentos().annotate(
+            referencia=Value(hoje, output_field=DateField()),
+            situacao=Case(
+                When(total_pago__gte=F("valor"), then=Value(S.PAGA)),
+                When(~Q(contrato__situacao=Contrato.Situacao.ASSINADO), then=Value(S.PREVISTA)),
+                When(vencimento__lt=hoje, then=Value(S.ATRASADA)),
+                default=Value(S.A_VENCER),
+                output_field=CharField(),
+            ),
+        )
+
+    def atrasadas(self, hoje=None):
+        return self.com_situacao(hoje).filter(situacao=Parcela.Situacao.ATRASADA)
+
+    def a_vencer(self, hoje=None):
+        return self.com_situacao(hoje).filter(situacao=Parcela.Situacao.A_VENCER)
+
 
 class Parcela(EmpresaOwnedModel):
     """Uma parcela do contrato, gerada pelo servidor: número, vencimento e valor.
@@ -235,6 +266,14 @@ class Parcela(EmpresaOwnedModel):
     A empresa é sempre a do contrato (copiada no save) — assim a API e os
     relatórios filtram parcela pela empresa direto, como todo dado do acervo.
     """
+
+    class Situacao(models.TextChoices):
+        """Só para rótulos e filtros — não existe coluna com isso no banco."""
+
+        PAGA = "PAGA", "Paga"
+        A_VENCER = "A_VENCER", "A vencer"
+        ATRASADA = "ATRASADA", "Atrasada"
+        PREVISTA = "PREVISTA", "Prevista (contrato em rascunho)"
 
     contrato = models.ForeignKey(Contrato, on_delete=models.CASCADE, related_name="parcelas")
     numero = models.PositiveSmallIntegerField("número")
@@ -278,6 +317,19 @@ class Parcela(EmpresaOwnedModel):
     def paga(self):
         """Paga quando a soma das baixas cobre o valor (aceita parcial e a mais)."""
         return self.valor_ja_pago() >= self.valor
+
+    # os dois abaixo precisam da parcela vinda de com_situacao()
+
+    @property
+    def situacao_rotulo(self):
+        return self.Situacao(self.situacao).label
+
+    @property
+    def dias_em_atraso(self):
+        """Dias desde o vencimento, contados até o mesmo "hoje" usado na situação (0 se não atrasada)."""
+        if self.situacao != self.Situacao.ATRASADA:
+            return 0
+        return (self.referencia - self.vencimento).days
 
 
 class DocumentoContrato(EmpresaOwnedModel):

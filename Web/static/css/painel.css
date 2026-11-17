@@ -251,6 +251,31 @@ tbody tr:last-child td {
   color: var(--cor-perigo);
 }
 
+/* Situação da parcela (W12) — calculada pelo servidor, aqui só a cor */
+
+.parcela-paga {
+  color: var(--cor-primaria-escura);
+  font-weight: 600;
+}
+
+.parcela-atrasada,
+.alerta-atraso {
+  color: var(--cor-perigo);
+  font-weight: 600;
+}
+
+.situacao.parcela-paga {
+  background: var(--cor-sucesso-fundo);
+}
+
+.situacao.parcela-atrasada {
+  background: var(--cor-perigo-fundo);
+}
+
+.parcela-prevista {
+  color: var(--cor-texto-suave);
+}
+
 /* Mensagens */
 
 .mensagens {

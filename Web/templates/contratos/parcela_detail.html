@@ -12,7 +12,7 @@
 <div class="cabecalho-imovel">
     <span class="codigo">Contrato #{{ contrato.pk }}</span>
     <h1>Parcela {{ parcela.numero }} de {{ contrato.numero_parcelas }}</h1>
-    <span class="situacao{% if parcela.paga %} ativo{% endif %}">{% if parcela.paga %}Paga{% else %}Em aberto{% endif %}</span>
+    <span class="situacao parcela-{{ parcela.situacao|lower }}">{{ parcela.situacao_rotulo }}{% if parcela.dias_em_atraso %} há {{ parcela.dias_em_atraso }} dia{{ parcela.dias_em_atraso|pluralize }}{% endif %}</span>
 </div>
 <p><a href="{% url 'contratos:contrato_detail' contrato.pk %}">voltar para o contrato</a></p>
 

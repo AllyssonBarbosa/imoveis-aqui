@@ -590,6 +590,8 @@ class SeedDemoTests(TestCase):
         self.assertTrue(primeira.paga)
         self.assertFalse(segunda.paga)
         self.assertGreater(segunda.total_pago, 0)
+        # a 2ª venceu há uns 2 meses e foi paga pela metade: aparece como atrasada (etapa 6)
+        self.assertEqual(contrato.parcelas.com_situacao().get(numero=2).situacao, "ATRASADA")
         self.assertEqual(Cliente.objects.count(), 1)
         self.assertEqual(contrato.cliente.nome_razao_social, "João Comprador")
         self.assertEqual(contrato.parcelas.count(), 60)
