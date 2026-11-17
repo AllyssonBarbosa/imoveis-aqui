@@ -5,7 +5,9 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
 from core.models import EmpresaOwnedModel
+from core.validators import validar_documento
 
+from .arquivos import armazenamento_privado, caminho_documento
 from .calculos import meses_de_vigencia
 
 LIMITE_DE_PARCELAS = 600  # 50 anos — acima disso é quase certo erro de digitação
@@ -234,3 +236,48 @@ class Parcela(EmpresaOwnedModel):
     def save(self, *args, **kwargs):
         self.empresa_id = self.contrato.empresa_id
         super().save(*args, **kwargs)
+
+
+class DocumentoContrato(EmpresaOwnedModel):
+    """Documento anexado ao contrato pelo gestor (contrato assinado, RG/CPF do cliente etc.).
+
+    O arquivo fica na pasta privada (contratos/arquivos.py): não tem URL e só
+    sai pela rota de download, que confere a empresa e o perfil. Tipo e tamanho
+    são validados pelo conteúdo (PDF, JPG ou PNG até 10MB — regra da W08).
+    """
+
+    class Tipo(models.TextChoices):
+        CONTRATO_ASSINADO = "CONTRATO_ASSINADO", "Contrato assinado"
+        DOCUMENTO_CLIENTE = "DOCUMENTO_CLIENTE", "Documento do cliente"
+        COMPROVANTE_RENDA = "COMPROVANTE_RENDA", "Comprovante de renda"
+        OUTRO = "OUTRO", "Outro"
+
+    contrato = models.ForeignKey(Contrato, on_delete=models.CASCADE, related_name="documentos")
+    tipo = models.CharField(max_length=20, choices=Tipo.choices)
+    descricao = models.CharField("descrição", max_length=200, blank=True)
+    arquivo = models.FileField(
+        storage=armazenamento_privado, upload_to=caminho_documento, max_length=200,
+        validators=[validar_documento],
+    )
+    enviado_por = models.ForeignKey(
+        "contas.Usuario", on_delete=models.PROTECT, editable=False, related_name="documentos_de_contrato"
+    )
+    enviado_em = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "documento do contrato"
+        verbose_name_plural = "documentos do contrato"
+        ordering = ["-enviado_em", "-id"]
+
+    def __str__(self):
+        return f"{self.get_tipo_display()} do contrato #{self.contrato_id}"
+
+    @property
+    def nome_para_download(self):
+        """Nome do arquivo baixado — sem nada do nome original enviado (que pode ter o nome do cliente)."""
+        return f"contrato-{self.contrato_id}-{self.tipo.lower()}-{self.pk}"
+
+    def save(self, *args, **kwargs):
+        self.empresa_id = self.contrato.empresa_id
+        super().save(*args, **kwargs)
+

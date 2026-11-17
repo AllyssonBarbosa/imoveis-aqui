@@ -3,7 +3,7 @@ from django import forms
 from contas.models import Usuario
 from imoveis.models import Imovel
 
-from .models import Contrato
+from .models import Contrato, DocumentoContrato
 
 
 def campo_de_data(rotulo, obrigatorio=True, ajuda=""):
@@ -98,3 +98,10 @@ class AssinaturaForm(forms.Form):
     data_assinatura = campo_de_data(
         "Data da assinatura", ajuda="Ao assinar, o imóvel sai da vitrine como vendido ou alugado.",
     )
+
+
+class DocumentoContratoForm(forms.ModelForm):
+    class Meta:
+        model = DocumentoContrato
+        fields = ["tipo", "descricao", "arquivo"]
+        help_texts = {"arquivo": "PDF, JPG ou PNG de até 10MB."}

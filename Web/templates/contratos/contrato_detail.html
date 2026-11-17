@@ -64,6 +64,43 @@
 {% endif %}
 
 <div class="secao">
+    <h2>Documentos</h2>
+    <p class="texto-suave">Os arquivos têm dados pessoais: só baixa quem está logado e é desta empresa.</p>
+    <table>
+        <thead>
+            <tr><th>Tipo</th><th>Descrição</th><th>Enviado</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for documento in documentos %}
+            <tr>
+                <td>{{ documento.get_tipo_display }}</td>
+                <td>{{ documento.descricao|default:"—" }}</td>
+                <td>{{ documento.enviado_em|date:"d/m/Y H:i" }} por {{ documento.enviado_por.nome }}</td>
+                <td>
+                    <a href="{% url 'contratos:documento_baixar' contrato.pk documento.pk %}">Baixar</a>
+                    {% if eh_gestor %}
+                    <form method="post" action="{% url 'contratos:documento_excluir' contrato.pk documento.pk %}" style="display:inline">
+                        {% csrf_token %}
+                        <button type="submit" class="secundario">Remover</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="4">Nenhum documento anexado.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% if eh_gestor %}
+    <form method="post" enctype="multipart/form-data" action="{% url 'contratos:documento_enviar' contrato.pk %}">
+        {% csrf_token %}
+        {{ documento_form.as_p }}
+        <button type="submit">Anexar documento</button>
+    </form>
+    {% endif %}
+</div>
+
+<div class="secao">
     <h2>Parcelas</h2>
     <table>
         <thead>

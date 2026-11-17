@@ -1,5 +1,6 @@
 from django.contrib import messages
-from django.core.exceptions import ValidationError
+from django.contrib.auth.decorators import login_required
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -11,7 +12,8 @@ from contas.models import Usuario
 from contas.views import CorretorOuGestorRequiredMixin, GestorRequiredMixin
 from imoveis.views import gestor_required
 
-from .forms import AssinaturaForm, ContratoForm, FiltroContratoForm
+from .arquivos import responder_download
+from .forms import AssinaturaForm, ContratoForm, DocumentoContratoForm, FiltroContratoForm
 from .models import Contrato
 from .servicos import assinar_contrato, contratos_visiveis_para, salvar_contrato
 
@@ -51,6 +53,8 @@ class ContratoDetailView(CorretorOuGestorRequiredMixin, View):
             "total_parcelas": parcelas.aggregate(total=Sum("valor"))["total"] or 0,
             "eh_gestor": request.user.perfil == Usuario.Perfil.GESTOR,
             "assinatura_form": AssinaturaForm(initial={"data_assinatura": timezone.localdate()}),
+            "documentos": contrato.documentos.select_related("enviado_por"),
+            "documento_form": DocumentoContratoForm(),
         })
 
 
@@ -111,4 +115,50 @@ def contrato_assinar(request, pk):
             f"Contrato assinado. O imóvel {contrato.imovel.codigo} agora está "
             f"{contrato.imovel.get_situacao_display().lower()} e saiu da vitrine.",
         )
+    return redirect("contratos:contrato_detail", pk=pk)
+
+
+# --- documentos do contrato (arquivos privados) --------------------------------
+
+
+def _contrato_visivel(request, pk):
+    """Contrato que o usuário pode ver (empresa + perfil). De fora cai em 404, sem revelar que existe."""
+    return get_object_or_404(contratos_visiveis_para(request.user), pk=pk)
+
+
+@gestor_required
+@require_POST
+def documento_enviar(request, pk):
+    contrato = _contrato_visivel(request, pk)
+    form = DocumentoContratoForm(request.POST, request.FILES)
+    form.instance.contrato = contrato
+    form.instance.empresa_id = contrato.empresa_id
+    form.instance.enviado_por = request.user
+    if form.is_valid():
+        documento = form.save()
+        messages.success(request, f"{documento.get_tipo_display()} anexado.")
+    else:
+        erros = [erro for lista in form.errors.values() for erro in lista]
+        messages.error(request, f"Não deu pra anexar o documento: {' '.join(erros)}")
+    return redirect("contratos:contrato_detail", pk=pk)
+
+
+@login_required
+def documento_baixar(request, pk, documento_id):
+    """Gestor da empresa ou corretor do contrato. O arquivo só sai por aqui."""
+    if request.user.perfil not in (Usuario.Perfil.GESTOR, Usuario.Perfil.CORRETOR):
+        raise PermissionDenied
+    contrato = _contrato_visivel(request, pk)
+    documento = get_object_or_404(contrato.documentos, pk=documento_id)
+    return responder_download(documento.arquivo, documento.nome_para_download)
+
+
+@gestor_required
+@require_POST
+def documento_excluir(request, pk, documento_id):
+    contrato = _contrato_visivel(request, pk)
+    documento = get_object_or_404(contrato.documentos, pk=documento_id)
+    documento.arquivo.delete(save=False)  # apaga o arquivo do disco, não só o registro
+    documento.delete()
+    messages.success(request, "Documento removido.")
     return redirect("contratos:contrato_detail", pk=pk)

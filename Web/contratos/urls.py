@@ -10,4 +10,11 @@ urlpatterns = [
     path("<int:pk>/", views.ContratoDetailView.as_view(), name="contrato_detail"),
     path("<int:pk>/editar/", views.ContratoFormView.as_view(), name="contrato_update"),
     path("<int:pk>/assinar/", views.contrato_assinar, name="contrato_assinar"),
+    path("<int:pk>/documentos/", views.documento_enviar, name="documento_enviar"),
+    path(
+        "<int:pk>/documentos/<int:documento_id>/baixar/", views.documento_baixar, name="documento_baixar"
+    ),
+    path(
+        "<int:pk>/documentos/<int:documento_id>/excluir/", views.documento_excluir, name="documento_excluir"
+    ),
 ]

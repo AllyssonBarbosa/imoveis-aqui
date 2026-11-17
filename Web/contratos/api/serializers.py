@@ -7,7 +7,7 @@ from clientes.models import Cliente
 from contas.models import Usuario
 from imoveis.models import Imovel
 
-from ..models import Contrato, Parcela
+from ..models import Contrato, DocumentoContrato, Parcela
 
 
 def erros_para_api(erro):
@@ -27,6 +27,47 @@ class ParcelaSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class DocumentoContratoSerializer(serializers.ModelSerializer):
+    """Documento do contrato. O arquivo entra no envio, mas nunca sai como URL:
+    o download é pela rota `baixar`, que confere empresa e perfil."""
+
+    arquivo = serializers.FileField(write_only=True, help_text="PDF, JPG ou PNG de até 10MB.")
+    enviado_por = serializers.CharField(source="enviado_por.nome", read_only=True)
+    url_download = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DocumentoContrato
+        fields = ["id", "contrato", "tipo", "descricao", "arquivo", "enviado_por", "enviado_em", "url_download"]
+        read_only_fields = ["id", "enviado_por", "enviado_em"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get("request")
+        if request is not None and request.user.is_authenticated and "contrato" in self.fields:
+            from ..servicos import contratos_visiveis_para
+
+            # contrato de outra empresa cai em "não existe", sem revelar que existe
+            self.fields["contrato"].queryset = contratos_visiveis_para(request.user)
+
+    def get_url_download(self, documento):
+        from django.urls import reverse
+
+        url = reverse("documento-contrato-baixar", args=[documento.pk])
+        request = self.context.get("request")
+        return request.build_absolute_uri(url) if request else url
+
+    def validate(self, attrs):
+        contrato = attrs["contrato"]
+        instancia = DocumentoContrato(
+            empresa_id=contrato.empresa_id, enviado_por=self.context["request"].user, **attrs
+        )
+        try:
+            instancia.full_clean()
+        except DjangoValidationError as erro:
+            raise erros_para_api(erro)
+        return attrs
+
+
 class ContratoSerializer(serializers.ModelSerializer):
     """Contrato com as parcelas (só leitura — quem gera é o servidor)."""
 
@@ -36,6 +77,7 @@ class ContratoSerializer(serializers.ModelSerializer):
     corretor_nome = serializers.CharField(source="corretor.nome", read_only=True)
     total_parcelado = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     parcelas = ParcelaSerializer(many=True, read_only=True)
+    documentos = DocumentoContratoSerializer(many=True, read_only=True)
 
     class Meta:
         model = Contrato
@@ -43,7 +85,7 @@ class ContratoSerializer(serializers.ModelSerializer):
             "id", "tipo", "situacao", "imovel", "imovel_codigo", "cliente", "cliente_nome",
             "corretor", "corretor_nome", "valor", "entrada", "numero_parcelas", "dia_vencimento",
             "data_inicio", "data_fim", "observacoes", "data_assinatura", "total_parcelado",
-            "criado_em", "atualizado_em", "parcelas",
+            "criado_em", "atualizado_em", "parcelas", "documentos",
         ]
         read_only_fields = ["id", "data_assinatura", "criado_em", "atualizado_em"]
         # entrada em branco/null = sem entrada (o caso de toda locação)

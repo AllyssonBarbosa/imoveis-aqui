@@ -127,6 +127,11 @@ STATICFILES_DIRS = [BASE_DIR / 'static']
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# Arquivos privados (W12): documentos do contrato e comprovantes de pagamento.
+# Ficam FORA do MEDIA_ROOT e não têm URL — só saem por uma view que confere o
+# login e a empresa (contratos/arquivos.py). Nunca aponte isto para dentro de media/.
+ARQUIVOS_PRIVADOS_ROOT = Path(env("ARQUIVOS_PRIVADOS_ROOT", default=str(BASE_DIR / "arquivos_privados")))
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
