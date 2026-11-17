@@ -1,6 +1,7 @@
 from rest_framework import generics
 from rest_framework.permissions import AllowAny
 
+from core.throttles import ThrottleVitrinePublica
 from empresas.api.serializers import CidadeSerializer
 from imoveis.vitrine import cidades_atendidas
 
@@ -14,6 +15,7 @@ class CidadeAtendidaAPIView(generics.ListAPIView):
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = [ThrottleVitrinePublica]
     serializer_class = CidadeSerializer
 
     def get_queryset(self):

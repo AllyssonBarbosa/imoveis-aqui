@@ -1,4 +1,5 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Prefetch
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, mixins, status, viewsets
@@ -8,9 +9,11 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from core.mixins import EmpresaScopedQuerySetMixin
 from core.permissions import EhCorretor, EhGestor
+from core.throttles import ThrottleVitrinePublica
 from localizacao.models import Cidade
 
 from ..models import (
@@ -305,6 +308,7 @@ class VitrineCidadeAPIView(generics.ListAPIView):
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = [ThrottleVitrinePublica]
     serializer_class = ImovelVitrineSerializer
     pagination_class = PaginacaoVitrine
 
@@ -316,15 +320,58 @@ class VitrineCidadeAPIView(generics.ListAPIView):
             raise ValidationError(erro.erros)
 
 
+class BairrosDaCidadeAPIView(APIView):
+    """Opções de bairro da vitrine — sem login; derivadas da mesma imoveis_da_vitrine().
+
+    Como saem da mesma regra da lista, escolher uma opção nunca leva a uma busca vazia.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [ThrottleVitrinePublica]
+
+    def get(self, request, cidade_id):
+        cidade = get_object_or_404(Cidade, pk=cidade_id)
+        bairros = (
+            imoveis_da_vitrine()
+            .filter(cidade_anuncio=cidade.pk)
+            .exclude(bairro_anuncio__isnull=True)
+            .exclude(bairro_anuncio="")
+            .order_by("bairro_anuncio")
+            .values_list("bairro_anuncio", flat=True)
+            .distinct()
+        )
+        return Response(list(bairros))
+
+
+class CaracteristicasPublicasAPIView(generics.ListAPIView):
+    """Catálogo global de características (id e nome), sem login — alimenta o filtro do app.
+
+    Sem paginação: o catálogo é curto e o app precisa dele inteiro para montar as opções.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [ThrottleVitrinePublica]
+    pagination_class = None
+    serializer_class = CaracteristicaSerializer
+    queryset = Caracteristica.objects.all()  # Meta.ordering = ["nome"]
+
+
 class ImovelVitrineDetalheAPIView(generics.RetrieveAPIView):
     """Página pública do imóvel. Rascunho ou empresa inativa cai em 404."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = [ThrottleVitrinePublica]
     serializer_class = ImovelVitrineDetalheSerializer
 
     def get_queryset(self):
         return imoveis_da_vitrine().select_related(
             "endereco__cidade", "corretor_responsavel__empresa", "casa", "terreno",
             "apartamento__predio__endereco__cidade", "lote__quadra__loteamento",
-        ).prefetch_related("fotos", "caracteristicas")
+        ).prefetch_related(
+            # a capa abre a galeria (regra da API; o app não reordena) — depois ordem e id
+            Prefetch("fotos", queryset=FotoImovel.objects.order_by("-capa", "ordem", "id")),
+            "caracteristicas",
+        )

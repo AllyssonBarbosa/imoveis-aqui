@@ -481,27 +481,34 @@ class ApartamentoPublicoSerializer(serializers.ModelSerializer):
 
 
 class LoteamentoPublicoSerializer(serializers.ModelSerializer):
-    """Infraestrutura e lazer do loteamento — valem para todos os lotes (W07)."""
+    """O que o anúncio do lote mostra do loteamento — sem id, sem cidade (a vitrine usa a do imóvel)."""
 
     class Meta:
         model = Loteamento
         fields = [
-            "nome", "incorporadora", "asfalto", "agua", "energia", "esgoto",
-            "iluminacao", "areas_de_lazer",
+            "nome", "incorporadora", "asfalto", "agua", "energia", "esgoto", "iluminacao",
+            "areas_de_lazer",
         ]
 
 
-class LotePublicoSerializer(serializers.ModelSerializer):
-    """Lote no anúncio: medidas, condições de parcelamento, quadra e loteamento."""
+class QuadraPublicaSerializer(serializers.ModelSerializer):
+    loteamento = LoteamentoPublicoSerializer(read_only=True)
 
-    quadra = serializers.CharField(source="quadra.identificacao", read_only=True)
-    loteamento = LoteamentoPublicoSerializer(source="quadra.loteamento", read_only=True)
+    class Meta:
+        model = Quadra
+        fields = ["identificacao", "loteamento"]
+
+
+class LotePublicoSerializer(serializers.ModelSerializer):
+    """Sem `vendido` e sem preço: o preço do lote é o preco_venda do imóvel (§11.5 d)."""
+
+    quadra = QuadraPublicaSerializer(read_only=True)
 
     class Meta:
         model = Lote
         fields = [
-            "numero", "quadra", "loteamento", "area", "frente", "fundo", "entrada_minima",
-            "parcelas_maximas", "condicoes_parcelamento",
+            "numero", "area", "frente", "fundo", "entrada_minima", "parcelas_maximas",
+            "condicoes_parcelamento", "quadra",
         ]
 
 

@@ -2,9 +2,10 @@ import io
 
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from PIL import Image
 
+from .checks import verificar_num_proxies
 from .validators import (
     TAMANHO_MAXIMO_IMAGEM_MB,
     somente_digitos,
@@ -67,3 +68,30 @@ class ValidarCpfCnpjTests(TestCase):
 
     def test_somente_digitos_remove_pontuacao(self):
         self.assertEqual(somente_digitos("176.626.330-55"), "17662633055")
+
+
+class VerificarNumProxiesTests(SimpleTestCase):
+    """WR-08: `check --deploy` avisa quando a produção ficou com o NUM_PROXIES padrão."""
+
+    @override_settings(DEBUG=False, NUM_PROXIES_CONFIGURADO=False)
+    def test_producao_sem_num_proxies_informado_avisa(self):
+        avisos = verificar_num_proxies(None)
+        self.assertEqual([aviso.id for aviso in avisos], ["core.W001"])
+
+    @override_settings(DEBUG=False, NUM_PROXIES_CONFIGURADO=True)
+    def test_producao_com_num_proxies_informado_nao_avisa(self):
+        self.assertEqual(verificar_num_proxies(None), [])
+
+    @override_settings(DEBUG=True, NUM_PROXIES_CONFIGURADO=False)
+    def test_desenvolvimento_nao_avisa(self):
+        self.assertEqual(verificar_num_proxies(None), [])
+
+    def test_o_aviso_roda_no_check_deploy(self):
+        from django.core.checks import run_checks
+
+        with override_settings(DEBUG=False, NUM_PROXIES_CONFIGURADO=False):
+            ids = [aviso.id for aviso in run_checks(include_deployment_checks=True)]
+        self.assertIn("core.W001", ids)
+        # e fica fora do `check` comum, que roda na partida e na suíte de testes
+        with override_settings(DEBUG=False, NUM_PROXIES_CONFIGURADO=False):
+            self.assertNotIn("core.W001", [aviso.id for aviso in run_checks()])
