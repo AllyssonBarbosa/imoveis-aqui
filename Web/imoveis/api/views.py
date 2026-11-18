@@ -368,7 +368,7 @@ class ImovelVitrineDetalheAPIView(generics.RetrieveAPIView):
 
     def get_queryset(self):
         return imoveis_da_vitrine().select_related(
-            "endereco__cidade", "corretor_responsavel__empresa", "casa", "terreno",
+            "endereco__cidade", "empresa", "corretor_responsavel__empresa", "casa", "terreno",
             "apartamento__predio__endereco__cidade", "lote__quadra__loteamento",
         ).prefetch_related(
             # a capa abre a galeria (regra da API; o app não reordena) — depois ordem e id

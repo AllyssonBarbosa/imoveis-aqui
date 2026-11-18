@@ -67,7 +67,7 @@ cp .env.example .env
 
 O `.env` não vai para o git (está no `.gitignore`) — cada máquina tem o seu.
 
-Duas variáveis opcionais controlam o limite de taxa das rotas públicas da vitrine (os padrões já funcionam): `VITRINE_TAXA_ANONIMA` (padrão `120/min` por IP) e `NUM_PROXIES` (padrão `0`, usa o IP da conexão; atrás de proxy reverso, o número de proxies confiáveis — senão todos os visitantes dividem o IP do proxy e o mesmo limite). `VITRINE_TAXA_ANONIMA` é validada na partida (`<número>/<período>`, ex. `120/min`); formato inválido para a aplicação com `ImproperlyConfigured`. **Em produção informe `NUM_PROXIES` sempre** (o `.env.example` deixa a linha comentada de propósito): sem a variável fora do `DEBUG`, `python manage.py check --deploy` mostra o aviso `core.W001`. Rode esse comando no checklist de deploy.
+Três variáveis opcionais controlam o limite de taxa das rotas públicas (os padrões já funcionam): `VITRINE_TAXA_ANONIMA` (padrão `120/min` por IP), `CONTATO_TAXA_ANONIMA` (padrão `10/min` por IP, balde próprio do `POST /api/publico/imoveis/<id>/contato/`) e `NUM_PROXIES` (padrão `0`, usa o IP da conexão; atrás de proxy reverso, o número de proxies confiáveis — senão todos os visitantes dividem o IP do proxy e o mesmo limite). `VITRINE_TAXA_ANONIMA` e `CONTATO_TAXA_ANONIMA` são validadas na partida (`<número>/<período>`, ex. `120/min`); formato inválido para a aplicação com `ImproperlyConfigured`. **Em produção informe `NUM_PROXIES` sempre** (o `.env.example` deixa a linha comentada de propósito): sem a variável fora do `DEBUG`, `python manage.py check --deploy` mostra o aviso `core.W001`. Rode esse comando no checklist de deploy.
 
 ### 4. Banco de dados
 
@@ -153,7 +153,7 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `GET /api/publico/empresas/<id>/` | Perfil público da empresa, com a lista de corretores ativos | público — vitrine (site e app) |
 | `GET /api/publico/cidades/` | Cidades atendidas (com UF) — só as que têm imóvel publicado | público — vitrine (site e app) |
 | `GET /api/publico/cidades/<id>/imoveis/` | Busca na cidade, com filtros, ordenação e paginação (ver abaixo) | público — vitrine (site e app) |
-| `GET /api/publico/imoveis/<id>/` | Detalhe do imóvel: fotos, dados da natureza, endereço com coordenada e corretor | público — vitrine (site e app) |
+| `GET /api/publico/imoveis/<id>/` | Detalhe do imóvel: fotos, dados da natureza, endereço com coordenada e corretor, e `canais_contato` (só os nomes dos canais com destino: WHATSAPP, TELEFONE, EMAIL) | público — vitrine (site e app) |
 | `POST /api/publico/imoveis/<id>/contato/` | Grava o contato — corpo `{ "canal": "WHATSAPP" \| "TELEFONE" \| "EMAIL" }`, devolve `{ "canal", "link" }` para o app abrir | público — vitrine (site e app) |
 | `GET /api/contatos/?imovel=&de=&ate=` | Caixa de contatos (mesmos filtros e mesma regra de quem vê do painel) | app, corretor e gestor |
 | `PATCH /api/contatos/<id>/` | Anota o retorno — corpo `{ "retorno": "FALEI" \| "VISITA_AGENDADA" \| "SEM_RESPOSTA" \| "DESCARTADO" }` | app, corretor e gestor |
@@ -185,7 +185,7 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
   - `ordenar` — `recentes` (padrão), `preco`, `-preco`, `area`, `-area`
   - `page` — 20 imóveis por página
 - Entrada fora desses formatos e tetos responde **400** `{campo: mensagem}` em português e nunca 500 (inclusive o byte NUL `%00`, que no PostgreSQL derrubaria a consulta).
-- **Limite de taxa:** as cinco rotas públicas que o app usa (lista, detalhe, cidades, bairros e características) dividem um balde por IP; passou de `VITRINE_TAXA_ANONIMA` (padrão 120/min) responde **429** com o cabeçalho `Retry-After` e corpo `{detail}`. A API autenticada do painel não é limitada. As rotas públicas `corretores/<id>/` e `empresas/<id>/` seguem sem limite. **Deploy:** configure `NUM_PROXIES` atrás de proxy reverso (o `check --deploy` avisa se faltar) e use um cache compartilhado (Redis, Memcached) com vários workers, porque o padrão é `LocMemCache` por processo e o limite efetivo multiplicaria. Muitos aparelhos atrás do mesmo IP (CGNAT) podem bater juntos no limite; ajuste a variável se for o caso.
+- **Limite de taxa:** as cinco rotas públicas que o app usa (lista, detalhe, cidades, bairros e características) dividem um balde por IP; passou de `VITRINE_TAXA_ANONIMA` (padrão 120/min) responde **429** com o cabeçalho `Retry-After` e corpo `{detail}`. A API autenticada do painel não é limitada. As rotas públicas `corretores/<id>/` e `empresas/<id>/` seguem sem limite. **Deploy:** configure `NUM_PROXIES` atrás de proxy reverso (o `check --deploy` avisa se faltar) e use um cache compartilhado (Redis, Memcached) com vários workers, porque o padrão é `LocMemCache` por processo e o limite efetivo multiplicaria. Muitos aparelhos atrás do mesmo IP (CGNAT) podem bater juntos no limite; ajuste a variável se for o caso. O **POST público de contato** (`POST /api/publico/imoveis/<id>/contato/`) tem balde próprio (`contato_publico`, `CONTATO_TAXA_ANONIMA`, padrão 10/min por IP): passou do limite responde **429** com `Retry-After` e `{detail}` e não grava o contato; navegar na vitrine não consome essa cota e esgotá-la não bloqueia a vitrine. A observação de CGNAT vale também para ele.
 - Opções de filtro, públicas e só de leitura:
   - `GET /api/publico/cidades/<id>/bairros/` — lista de textos, em ordem alfabética e sem repetição, com os bairros dos imóveis que estão na vitrine daquela cidade (o do prédio, para apartamento); cidade inexistente dá 404
   - `GET /api/publico/caracteristicas/` — catálogo global `[{id, nome}]` ordenado por nome, sem paginação
@@ -211,7 +211,7 @@ python manage.py semear_vitrine_dev
 
 ## Contatos (W11) — regras de negócio
 
-- **O servidor monta o link.** Os botões da página do imóvel (WhatsApp, Ligar, Enviar e-mail) não levam o link pronto: enviam um POST para `/imovel/<id>/contato/`, que grava o contato e redireciona. O app faz o mesmo pela API e recebe o link para abrir. As regras ficam em `contatos/servicos.py`.
+- **O servidor monta o link.** Os botões da página do imóvel (WhatsApp, Ligar, Enviar e-mail) não levam o link pronto: enviam um POST para `/imovel/<id>/contato/`, que grava o contato e redireciona. O app faz o mesmo pela API e recebe o link para abrir. As regras ficam em `contatos/servicos.py`. Os textos do WhatsApp e do e-mail usam `%20` para espaço (nunca `+`), para a mensagem chegar com espaços em qualquer aplicativo.
 - **POST, não GET.** Robôs, pré-carregamento do navegador e prévias de link fazem GET sozinhos; só um clique envia o formulário. GET no endereço de contato dá 405 e não grava nada.
 - **Mensagem padrão** com o título, o **código interno** do imóvel e o link do anúncio. O código continua fora da vitrine (HTML e JSON, regra da W09): ele só sai do servidor dentro do link, no momento do clique — o visitante o vê no texto da mensagem antes de enviar.
 - **Para quem vai:** corretor responsável; se ele estiver desativado, a empresa dona do imóvel (o contato fica com `corretor` vazio e só o gestor vê). Autônomo sem telefone/WhatsApp próprio usa os da empresa. Canal sem número/e-mail não aparece na página e é recusado na API.
@@ -219,7 +219,7 @@ python manage.py semear_vitrine_dev
 - **Guarda o contato, não a conversa:** imóvel, corretor, canal, data e o retorno. Nenhum dado do visitante (nem campo de texto livre).
 - **Quem vê:** sempre filtrado pela empresa do usuário; o corretor vê só os contatos que recebeu, o gestor vê todos da empresa, o administrador não vê nenhum. Contato de fora cai em 404. Corretor e gestor podem anotar o retorno (falei, visita agendada, sem resposta, descartado).
 - Os botões dos perfis (empresa e corretor) continuam indo direto para o WhatsApp, sem registro: o contato pertence a um imóvel, e o perfil não tem um.
-- Limite conhecido: registramos o clique. Quem copiar o número na mão não vira contato. Ainda não há limite de requisições por visitante no endereço público.
+- Limite conhecido: registramos o clique. Quem copiar o número na mão não vira contato. O POST público da API tem limite por IP (`CONTATO_TAXA_ANONIMA`, padrão 10/min); o POST do site (`/imovel/<id>/contato/`) ainda não tem.
 
 ## Painel do gestor — regras de negócio
 

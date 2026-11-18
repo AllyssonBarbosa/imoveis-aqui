@@ -4,6 +4,7 @@ from rest_framework import serializers
 from rest_framework.settings import api_settings
 
 from contas.api.serializers import CorretorPublicoSerializer
+from contatos.servicos import canais_disponiveis
 from core.models import Endereco
 from empresas.api.serializers import CidadeSerializer
 
@@ -561,6 +562,7 @@ class ImovelVitrineDetalheSerializer(serializers.ModelSerializer):
     lote = serializers.SerializerMethodField()
     fotos = FotoPublicaSerializer(many=True, read_only=True)
     corretor_responsavel = serializers.SerializerMethodField()
+    canais_contato = serializers.SerializerMethodField()
 
     class Meta:
         model = Imovel
@@ -568,6 +570,7 @@ class ImovelVitrineDetalheSerializer(serializers.ModelSerializer):
             "id", "titulo", "natureza", "finalidade", "preco_venda", "preco_aluguel",
             "preco_condominio", "preco_iptu", "descricao", "caracteristicas", "casa",
             "terreno", "apartamento", "lote", "endereco", "fotos", "corretor_responsavel",
+            "canais_contato",
         ]
 
     def _detalhes_se_for(self, imovel, natureza):
@@ -593,3 +596,9 @@ class ImovelVitrineDetalheSerializer(serializers.ModelSerializer):
         if not corretor.is_active:
             return None
         return CorretorPublicoSerializer(corretor, context=self.context).data
+
+    def get_canais_contato(self, imovel):
+        # Só os NOMES dos canais saem aqui. Número, e-mail e o link (que leva o código interno do
+        # imóvel) só saem do servidor no POST de contato, na hora do toque — mesma regra do site da W11.
+        # A regra de quais canais existem (inclusive o fallback para a empresa) é só do servidor.
+        return [str(canal) for canal in canais_disponiveis(imovel)]

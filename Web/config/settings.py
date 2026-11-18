@@ -144,6 +144,14 @@ if not re.fullmatch(r'[0-9]+/[smhd][a-z]*', VITRINE_TAXA_ANONIMA):
         "por exemplo 120/min."
     )
 
+# Taxa do POST público de contato (grava na caixa do corretor), em balde próprio. Mesma validação da vitrine.
+CONTATO_TAXA_ANONIMA = env('CONTATO_TAXA_ANONIMA', default='10/min')
+if not re.fullmatch(r'[0-9]+/[smhd][a-z]*', CONTATO_TAXA_ANONIMA):
+    raise ImproperlyConfigured(
+        f"CONTATO_TAXA_ANONIMA inválida: {CONTATO_TAXA_ANONIMA!r}. Use <número>/<período>, "
+        "por exemplo 10/min."
+    )
+
 # Quantos proxies confiáveis existem na frente da API (0 = nenhum, usa o IP da conexão).
 NUM_PROXIES = env.int('NUM_PROXIES', default=0)
 # Se a variável foi informada de propósito. Fora do DEBUG, o padrão 0 atrás de proxy reverso junta todos
@@ -163,6 +171,8 @@ REST_FRAMEWORK = {
     # Não há DEFAULT_THROTTLE_CLASSES: a API autenticada não é limitada.
     'DEFAULT_THROTTLE_RATES': {
         'vitrine_publica': VITRINE_TAXA_ANONIMA,
+        # balde próprio do POST público de contato (ThrottleContatoPublico)
+        'contato_publico': CONTATO_TAXA_ANONIMA,
     },
     # 0 = usa o IP da conexão e ignora o X-Forwarded-For, que o cliente forja.
     # Atrás de proxy reverso, informe quantos proxies confiáveis existem.

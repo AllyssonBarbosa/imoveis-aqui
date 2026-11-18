@@ -11,3 +11,15 @@ class ThrottleVitrinePublica(AnonRateThrottle):
     """
 
     scope = "vitrine_publica"
+
+
+class ThrottleContatoPublico(ThrottleVitrinePublica):
+    """Limite por IP do POST público de contato (sem token).
+
+    O POST grava um registro na caixa do corretor, então tem balde e taxa próprios
+    (escopo contato_publico, variável CONTATO_TAXA_ANONIMA): navegar na vitrine não
+    consome esta cota e esgotá-la não bloqueia a vitrine. Passou do limite, responde
+    429 com Retry-After antes de a view gravar qualquer coisa.
+    """
+
+    scope = "contato_publico"

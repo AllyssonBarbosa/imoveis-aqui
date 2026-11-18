@@ -262,7 +262,8 @@ class WhatsAppTests(SiteBase):
         self.assertContains(response, f'action="{reverse("site_publico:contato", args=[self.casa.pk])}"')
         destino = self.contatar(self.casa)["Location"]
         self.assertTrue(destino.startswith("https://wa.me/5511988887777?text="))
-        self.assertIn("Casa+com+quintal", destino)
+        # APP06: espaço sai como %20 (link_whatsapp usa quote_via=quote), nunca como "+"
+        self.assertIn("Casa%20com%20quintal", destino)
 
     def test_corretor_desativado_cai_no_whatsapp_da_empresa(self):
         self.corretor.is_active = False

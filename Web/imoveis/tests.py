@@ -2212,7 +2212,7 @@ class VitrineAllowlistExataTests(VitrineBase):
     CHAVES_DETALHE = {
         "id", "titulo", "natureza", "finalidade", "preco_venda", "preco_aluguel",
         "preco_condominio", "preco_iptu", "descricao", "caracteristicas", "casa", "terreno",
-        "apartamento", "lote", "endereco", "fotos", "corretor_responsavel",
+        "apartamento", "lote", "endereco", "fotos", "corretor_responsavel", "canais_contato",
     }
     CHAVES_ENDERECO = {"logradouro", "numero", "bairro", "cep", "cidade", "latitude", "longitude"}
     CHAVES_CIDADE = {"id", "nome", "uf"}
@@ -2311,6 +2311,67 @@ class VitrineAllowlistExataTests(VitrineBase):
             self.assertNotIn(proibida, lote)
             self.assertNotIn(proibida, lote["quadra"])
             self.assertNotIn(proibida, lote["quadra"]["loteamento"])
+
+
+class VitrineCanaisContatoTests(VitrineBase):
+    """APP06 (D-01, D-02, D-04): o detalhe diz quais canais de contato existem — só os nomes.
+
+    Número, e-mail e link (que leva o código interno) saem do servidor apenas no POST de contato.
+    O app nunca deduz canais: a regra (inclusive o fallback para a empresa) é do servidor.
+    """
+
+    NOMES = {"WHATSAPP", "TELEFONE", "EMAIL"}
+
+    def detalhe(self, imovel):
+        response = self.client.get(reverse("publico-imovel", args=[imovel.pk]))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return response.json()
+
+    def desativar_corretor(self):
+        Usuario.objects.filter(pk=self.corretor.pk).update(is_active=False)
+
+    def contatos_da_empresa(self, **campos):
+        Empresa.objects.filter(pk=self.empresa.pk).update(**campos)
+
+    def test_detalhe_traz_os_tres_canais_na_ordem_fixa(self):
+        self.assertEqual(self.detalhe(self.casa)["canais_contato"], ["WHATSAPP", "TELEFONE", "EMAIL"])
+
+    def test_canais_sao_so_nomes(self):
+        for imovel in (self.casa, self.sobrado, self.apto, self.terreno):
+            with self.subTest(imovel=imovel.titulo):
+                canais = self.detalhe(imovel)["canais_contato"]
+                self.assertTrue(canais)
+                for canal in canais:
+                    self.assertIn(canal, self.NOMES)
+                    # nunca número, e-mail ou link
+                    self.assertRegex(canal, r"^[A-Z]+$")
+
+    def test_corretor_desativado_usa_os_canais_da_empresa(self):
+        self.desativar_corretor()
+        self.contatos_da_empresa(whatsapp="11999999999", telefone="", email="contato@teste.com")
+        dados = self.detalhe(self.casa)
+        self.assertIsNone(dados["corretor_responsavel"])
+        self.assertEqual(dados["canais_contato"], ["WHATSAPP", "EMAIL"])
+
+    def test_sem_destino_devolve_lista_vazia(self):
+        self.desativar_corretor()
+        self.contatos_da_empresa(whatsapp="", telefone="", email="")
+        self.assertEqual(self.detalhe(self.casa)["canais_contato"], [])
+
+    def test_lista_da_vitrine_nao_tem_canais(self):
+        itens = self.buscar().json()["results"]
+        self.assertTrue(itens)
+        for item in itens:
+            self.assertNotIn("canais_contato", item)
+
+    def test_corretor_desativado_nao_aumenta_as_consultas(self):
+        url = reverse("publico-imovel", args=[self.casa.pk])
+        with CaptureQueriesContext(connection) as com_corretor_ativo:
+            self.client.get(url)
+        self.desativar_corretor()
+        with CaptureQueriesContext(connection) as com_corretor_desativado:
+            self.client.get(url)
+        self.assertEqual(len(com_corretor_desativado), len(com_corretor_ativo))
 
 
 class VitrineFotosCapaTests(VitrineBase):

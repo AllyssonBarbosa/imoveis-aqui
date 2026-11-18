@@ -1,15 +1,24 @@
 from datetime import datetime
+from unittest import mock
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from django.conf import settings
+from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
+from rest_framework.permissions import AllowAny
 
 from contas.models import Usuario
+from core.throttles import ThrottleContatoPublico, ThrottleVitrinePublica
+from imoveis.models import Imovel
 from imoveis.tests import (
-    VitrineBase, criar_corretor, criar_empresa, criar_endereco, criar_gestor, criar_imovel,
-    criar_proprietario,
+    TAXA_ALTA_NOS_TESTES, VitrineBase, criar_corretor, criar_empresa, criar_endereco, criar_gestor,
+    criar_imovel, criar_proprietario,
 )
+
+from .api.views import ContatoPublicoAPIView
+from .servicos import link_whatsapp
 
 from .models import Contato
 
@@ -389,4 +398,125 @@ class IsolamentoTests(ContatoBase):
         self.assertIn(
             self.client.get(reverse("contato-list")).status_code,
             (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
+        )
+
+
+class ContatoSituacaoTests(ContatoBase):
+    """APP06: o POST público da W11 roda sobre a regra de vitrine (na_vitrine) da main."""
+
+    def test_post_publico_sem_token_grava_e_devolve_canal_e_link(self):
+        response = self.contatar_api(self.casa, "TELEFONE")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(set(response.data), {"canal", "link"})
+        self.assertTrue(response.data["link"].startswith("tel:+55"))
+        contato = Contato.objects.latest("id")
+        self.assertEqual(contato.imovel, self.casa)
+        self.assertEqual(contato.corretor, self.corretor)
+        self.assertEqual(contato.canal, Contato.Canal.TELEFONE)
+
+    def test_imovel_reservado_nao_recebe_contato(self):
+        self.casa.mudar_situacao(Imovel.Situacao.RESERVADO, self.gestor)
+        antes = Contato.objects.count()
+        response = self.contatar_api(self.casa)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(Contato.objects.count(), antes)
+
+
+class ContatoLimiteDeTaxaTests(ContatoBase):
+    """APP06: o POST público de contato grava na caixa do corretor, então tem balde e taxa próprios."""
+
+    def test_passou_da_taxa_recebe_429_sem_gravar(self):
+        antes = Contato.objects.count()
+        with mock.patch.object(ThrottleContatoPublico, "rate", "2/min", create=True):
+            primeira = self.contatar_api(self.casa)
+            segunda = self.contatar_api(self.casa)
+            terceira = self.contatar_api(self.casa)
+        self.assertEqual(primeira.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(segunda.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(terceira.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertIn("Retry-After", terceira)
+        self.assertIn("detail", terceira.data)
+        self.assertEqual(Contato.objects.count(), antes + 2)
+
+    def test_view_usa_o_throttle_de_contato_sem_login(self):
+        self.assertEqual(ContatoPublicoAPIView.throttle_classes, [ThrottleContatoPublico])
+        self.assertEqual(ThrottleContatoPublico.scope, "contato_publico")
+        self.assertEqual(ContatoPublicoAPIView.authentication_classes, [])
+        self.assertEqual(ContatoPublicoAPIView.permission_classes, [AllowAny])
+
+    def test_contato_herda_a_taxa_alta_da_suite(self):
+        # sem patch próprio, a subclasse enxerga a taxa fixada na ThrottleVitrinePublica pelo setUp
+        self.assertEqual(ThrottleContatoPublico().rate, TAXA_ALTA_NOS_TESTES)
+
+    def test_cota_de_contato_esgotada_nao_bloqueia_a_vitrine(self):
+        with mock.patch.object(ThrottleContatoPublico, "rate", "1/min", create=True):
+            self.assertEqual(self.contatar_api(self.casa).status_code, status.HTTP_201_CREATED)
+            self.assertEqual(self.contatar_api(self.casa).status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+            detalhe = self.client.get(reverse("publico-imovel", args=[self.casa.pk]))
+        self.assertEqual(detalhe.status_code, status.HTTP_200_OK)
+
+    def test_vitrine_esgotada_nao_bloqueia_o_contato(self):
+        # as duas taxas explícitas: a subclasse herdaria a da vitrine se só a do pai fosse trocada
+        with mock.patch.object(ThrottleVitrinePublica, "rate", "1/min", create=True), mock.patch.object(
+            ThrottleContatoPublico, "rate", "100000/min", create=True
+        ):
+            url = reverse("publico-imovel", args=[self.casa.pk])
+            self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
+            self.assertEqual(self.client.get(url).status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+            contato = self.contatar_api(self.casa)
+        self.assertEqual(contato.status_code, status.HTTP_201_CREATED)
+
+    def test_taxa_padrao_vem_do_settings(self):
+        # `get_rate()` lê o settings e ignora o patch de taxa alta do setUp (que troca só `.rate`)
+        esperada = settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["contato_publico"]
+        self.assertEqual(ThrottleContatoPublico().get_rate(), esperada)
+        self.assertEqual(esperada, settings.CONTATO_TAXA_ANONIMA)
+
+    def test_x_forwarded_for_forjado_nao_reinicia_a_contagem(self):
+        configuracao = {**settings.REST_FRAMEWORK, "NUM_PROXIES": 0}
+        with override_settings(REST_FRAMEWORK=configuracao), mock.patch.object(
+            ThrottleContatoPublico, "rate", "2/min", create=True
+        ):
+            respostas = [
+                self.contatar_api(self.casa, HTTP_X_FORWARDED_FOR=f"10.0.0.{n}").status_code
+                for n in (1, 2, 3)
+            ]
+        self.assertEqual(
+            respostas,
+            [status.HTTP_201_CREATED, status.HTTP_201_CREATED, status.HTTP_429_TOO_MANY_REQUESTS],
+        )
+
+
+class MensagemDoWhatsAppComEspacosTests(ContatoBase):
+    """APP06 (Pitfall 7): o texto do link do WhatsApp usa %20 para espaço, como o mailto.
+
+    Um cliente do WhatsApp que não aplica a decodificação de formulário mostraria "+" entre
+    as palavras. A correção fica no servidor (decisão do usuário após a checagem do plano):
+    o app abre o link como recebe, sem recodificar.
+    """
+
+    def test_api_usa_por_cento_20_e_nunca_mais(self):
+        response = self.contatar_api(self.casa)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        link = response.data["link"]
+        self.assertTrue(link.startswith("https://wa.me/"))
+        self.assertIn("%20", link)
+        self.assertNotIn("+", link)
+        # unquote não troca "+" por espaço: se as palavras chegam separadas, o %20 está certo
+        texto = unquote(urlsplit(link).query)
+        self.assertIn("Casa com quintal", texto)
+        self.assertIn("CASA-INTERNO-1", texto)
+
+    def test_site_usa_por_cento_20_e_nunca_mais(self):
+        response = self.contatar_site(self.casa)
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        link = response["Location"]
+        self.assertIn("%20", link)
+        self.assertNotIn("+", link)
+        self.assertIn("Casa com quintal", unquote(urlsplit(link).query))
+
+    def test_mais_literal_da_mensagem_vira_2b(self):
+        self.assertEqual(
+            link_whatsapp("11988887777", "a b+c"),
+            "https://wa.me/5511988887777?text=a%20b%2Bc",
         )

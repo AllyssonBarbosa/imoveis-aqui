@@ -44,7 +44,8 @@ def link_whatsapp(numero, mensagem):
     digitos = _com_codigo_do_brasil(numero)
     if not digitos:
         return None
-    return f"https://wa.me/{digitos}?{urlencode({'text': mensagem})}"
+    # espaço vira %20 como no mailto (o "+" do urlencode padrão apareceria literal no WhatsApp)
+    return f"https://wa.me/{digitos}?{urlencode({'text': mensagem}, quote_via=quote)}"
 
 
 def link_telefone(numero):

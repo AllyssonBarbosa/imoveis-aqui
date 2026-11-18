@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 
 from core.mixins import EmpresaScopedQuerySetMixin
 from core.permissions import PertenceAUmaEmpresa
+from core.throttles import ThrottleContatoPublico
 from imoveis.vitrine import FiltroInvalido, imoveis_da_vitrine
 
 from ..models import Contato
@@ -25,6 +26,8 @@ class ContatoPublicoAPIView(APIView):
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    # só esta view é limitada: a caixa de contatos (autenticada) segue sem limite
+    throttle_classes = [ThrottleContatoPublico]
 
     def post(self, request, pk):
         # só imóvel publicado de empresa ativa recebe contato — rascunho cai em 404
