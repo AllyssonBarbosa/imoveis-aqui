@@ -201,6 +201,16 @@ class Imovel(EmpresaOwnedModel):
         self.publicado = False
         self.save(update_fields=["publicado"])
 
+    def pode_mudar_situacao(self, usuario):
+        """Quem muda a situação à mão: o gestor da empresa ou o corretor responsável pelo imóvel."""
+        from contas.models import Usuario
+
+        if usuario is None or usuario.empresa_id != self.empresa_id:
+            return False
+        if usuario.perfil == Usuario.Perfil.GESTOR:
+            return True
+        return usuario.perfil == Usuario.Perfil.CORRETOR and usuario.pk == self.corretor_responsavel_id
+
     def mudar_situacao(self, nova, usuario, observacao="", pelo_contrato=False):
         """Única porta de mudança de situação — sempre grava quem, quando, de/para e a observação.
 
@@ -208,7 +218,13 @@ class Imovel(EmpresaOwnedModel):
         decide é o contrato. Só a assinatura chama com pelo_contrato=True.
         (Cancelar/encerrar contrato, que devolveria o imóvel, fica para uma
         tarefa futura.)
+
+        À mão, só o gestor ou o corretor responsável (pode_mudar_situacao).
         """
+        if not pelo_contrato and not self.pode_mudar_situacao(usuario):
+            raise ValidationError(
+                "Só o corretor responsável por este imóvel ou o gestor podem mudar a situação."
+            )
         if nova not in self.Situacao.values:
             raise ValidationError("Situação inválida.")
         if nova == self.situacao:
