@@ -22,7 +22,11 @@ O app é uma tela sobre os dados: nenhuma regra de negócio é decidida nele —
 | `empresas` | `Empresa` — imobiliária ou corretor autônomo (mesma tabela) |
 | `contas` | `Usuario` customizado (login por e-mail), perfis administrador/gestor/corretor, login do painel e API de autenticação |
 | `proprietarios` | `Proprietario` — dono do imóvel (PF/PJ), sem acesso ao sistema |
+| `clientes` | `Cliente` — quem compra ou aluga (PF/PJ, CPF/CNPJ e contato), sem acesso ao sistema e fora da vitrine (W12) |
+| `contratos` | `Contrato` (venda ou locação) e `Parcela`, gerada pelo servidor ao salvar: centavos que sobram na última parcela, vencimento no último dia em mês mais curto, locação com uma parcela por mês da vigência (W12). `DocumentoContrato` guarda os anexos na pasta privada `Web/arquivos_privados/` (fora de `media/`, sem URL; download só pela rota que confere empresa e perfil). `Baixa` registra cada pagamento de parcela com comprovante (também na pasta privada): várias baixas por parcela, parcial ou a mais; a parcela está paga quando a soma cobre o valor. A situação da parcela (paga, a vencer, atrasada — venceu antes de hoje e tem saldo — ou prevista, no rascunho) é calculada na consulta (`Parcela.objects.com_situacao(hoje)`, dia de São Paulo), nunca gravada |
+| `relatorios` | Sem tabelas: relatórios do gestor calculados na hora (acervo por natureza × situação, contatos por corretor no período e parcelas em atraso/a vencer), sempre só da empresa dele (W12) |
 | `imoveis` | `Caracteristica` (tabela geral do administrador), `Imovel` (parte comum do cadastro) e `FotoImovel` |
+| `contatos` | `Contato` — registro de que alguém procurou um imóvel (WhatsApp, telefone ou e-mail) e o retorno anotado (W11) |
 
 ### Isolamento multitenant
 
@@ -66,6 +70,8 @@ cp .env.example .env
 
 O `.env` não vai para o git (está no `.gitignore`) — cada máquina tem o seu.
 
+Os documentos de contrato e os comprovantes de pagamento (W12) ficam em `Web/arquivos_privados/` — fora de `media/`, sem URL pública e também fora do git. Para usar outra pasta, defina `ARQUIVOS_PRIVADOS_ROOT` no `.env` (nunca dentro de `media/`).
+
 Duas variáveis opcionais controlam o limite de taxa das rotas públicas da vitrine (os padrões já funcionam): `VITRINE_TAXA_ANONIMA` (padrão `120/min` por IP) e `NUM_PROXIES` (padrão `0`, usa o IP da conexão; atrás de proxy reverso, o número de proxies confiáveis — senão todos os visitantes dividem o IP do proxy e o mesmo limite). `VITRINE_TAXA_ANONIMA` é validada na partida (`<número>/<período>`, ex. `120/min`); formato inválido para a aplicação com `ImproperlyConfigured`. **Em produção informe `NUM_PROXIES` sempre** (o `.env.example` deixa a linha comentada de propósito): sem a variável fora do `DEBUG`, `python manage.py check --deploy` mostra o aviso `core.W001`. Rode esse comando no checklist de deploy.
 
 ### 4. Banco de dados
@@ -96,7 +102,7 @@ Todas as telas e rotas já prontas estão listadas em [Telas prontas](#telas-pro
 python manage.py seed_demo
 ```
 
-Cria uma empresa, uma cidade, características e os três usuários de teste (tabela abaixo). Pode rodar de novo sem medo — não duplica nada.
+Cria uma empresa, uma cidade, características, os três usuários de teste (tabela abaixo) e, para a W12, um imóvel, um cliente e um contrato de venda assinado, com 60 parcelas (a 1ª paga e a 2ª paga pela metade). Pode rodar de novo sem medo — não duplica nada.
 
 ### 7. Rodar os testes
 
@@ -133,13 +139,35 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `/painel/corretores/novo/` | Cadastra um corretor novo | gestor |
 | `/painel/proprietarios/` | Lista os proprietários da própria empresa, com busca por nome ou documento | corretor |
 | `/painel/proprietarios/novo/` | Cadastra um proprietário (PF ou PJ) | corretor |
+| `/painel/clientes/?busca=` | Lista os clientes da própria empresa, com busca por nome ou documento | corretor e gestor |
+| `/painel/clientes/novo/` e `/painel/clientes/<id>/editar/` | Cadastra e edita cliente (CPF/CNPJ válido e telefone ou e-mail) | corretor e gestor |
+| `/painel/contratos/?tipo=&situacao=` | Lista os contratos | gestor (todos da empresa) e corretor (só os dele) |
+| `/painel/contratos/novo/` e `/painel/contratos/<id>/editar/` | Cadastra e edita o contrato; ao salvar, gera as parcelas (assinado: só observações) | gestor |
+| `/painel/contratos/<id>/` | Dados do contrato e todas as parcelas, com pago, saldo e situação (atrasadas em destaque) | gestor e corretor do contrato |
+| `POST /painel/contratos/<id>/documentos/` | Anexa documento ao contrato (PDF, JPG ou PNG até 10MB) | gestor |
+| `/painel/contratos/<id>/documentos/<doc>/baixar/` | Baixa o documento (como anexo) | gestor e corretor do contrato |
+| `/painel/contratos/<id>/parcelas/<parcela>/` | Parcela com as baixas; `POST` registra baixa (data, valor pago, forma e comprovante; só contrato assinado) | ver: gestor e corretor do contrato; baixa: gestor |
+| `/painel/contratos/<id>/parcelas/<parcela>/baixas/<baixa>/comprovante/` | Baixa o comprovante (como anexo) | gestor e corretor do contrato |
+| `POST /painel/contratos/<id>/assinar/` | Assina o contrato (data da assinatura): o imóvel fica vendido/alugado, com histórico, e sai da vitrine; um só contrato assinado por imóvel | gestor |
+| `/painel/relatorios/` | Relatórios: `acervo/`, `contatos/?de=&ate=` (AAAA-MM-DD, dia de São Paulo) e `parcelas/?dias=30` (em atraso e a vencer nos próximos dias) | gestor |
 | `/painel/imoveis/` | Lista os imóveis da própria empresa | corretor |
 | `/painel/imoveis/novo/` | Cadastra a parte comum do imóvel | corretor |
 | `/painel/imoveis/<id>/` | Página do imóvel — endereço, fotos e botão de publicar | corretor |
+| `/painel/contatos/?imovel=&de=&ate=` | Caixa de contatos, com filtro por imóvel e período e o retorno anotado na própria linha | corretor (os dele) e gestor (os da empresa) |
+| `POST /imovel/<id>/contato/` | Site: grava o contato e redireciona para WhatsApp, `tel:` ou `mailto:` (campo `canal`) | público, sem login |
 | `/admin/` | Django Admin — cadastro de empresas, usuários e características | administrador |
 | `POST /api/auth/login/` | Login da API — corpo `{ "email", "password" }`, devolve `{ "token" }` | app (gestor/corretor) |
 | `GET /api/usuarios/` | Lista os usuários da própria empresa (`Authorization: Token <token>`) | app, autenticado |
 | `GET/POST /api/proprietarios/?busca=` | Lista (com busca) e cadastra proprietários da própria empresa | app, corretor |
+| `GET/POST /api/clientes/?busca=` e `GET/PUT/PATCH /api/clientes/<id>/` | Clientes da própria empresa (sem exclusão) | app, corretor e gestor |
+| `GET/POST /api/contratos/?tipo=&situacao=` e `GET/PUT/PATCH /api/contratos/<id>/` | Contratos com as parcelas (geradas pelo servidor; sem exclusão) | app — leitura: gestor e corretor do contrato; escrita: gestor |
+| `GET/POST /api/documentos-contrato/?contrato=` e `DELETE /api/documentos-contrato/<id>/` | Documentos do contrato (envio em multipart, campo `arquivo`); a resposta nunca traz o endereço do arquivo | app — leitura: gestor e corretor do contrato; envio e exclusão: gestor |
+| `GET /api/documentos-contrato/<id>/baixar/` | Baixa o arquivo, conferindo empresa e perfil | app, gestor e corretor do contrato |
+| `GET/POST /api/baixas/?parcela=&contrato=` e `GET /api/baixas/<id>/` | Baixas de parcela (envio em multipart, campo `comprovante`); sem edição nem exclusão | app — leitura: gestor e corretor do contrato; registro: gestor |
+| `GET /api/parcelas/?contrato=&situacao=` | Parcelas com total pago, saldo, situação (`PAGA`, `A_VENCER`, `ATRASADA` ou `PREVISTA`) e dias em atraso, calculados pelo servidor (só leitura) | app — gestor (empresa) e corretor (contratos dele) |
+| `GET /api/baixas/<id>/comprovante/` | Baixa o comprovante, conferindo empresa e perfil | app, gestor e corretor do contrato |
+| `POST /api/contratos/<id>/assinar/` | Assina o contrato — corpo `{ "data_assinatura": "AAAA-MM-DD" }` | app, gestor |
+| `GET /api/relatorios/acervo/`, `GET /api/relatorios/contatos/?de=&ate=` e `GET /api/relatorios/parcelas/?dias=30` | Os mesmos relatórios do painel (dinheiro em texto, ex.: `"1234.50"`) | app, gestor |
 | `GET/POST /api/imoveis/` | Lista e cadastra imóveis da própria empresa | app, corretor |
 | `GET/PUT /api/imoveis/<id>/endereco/` | Lê/grava o endereço do imóvel (cidade, CEP, latitude, longitude) | app, corretor |
 | `POST /api/imoveis/<id>/publicar/` | Publica o imóvel — recusa se faltar cidade ou coordenada | app, corretor |
@@ -151,6 +179,9 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `GET /api/publico/cidades/` | Cidades atendidas (com UF) — só as que têm imóvel publicado | público — vitrine (site e app) |
 | `GET /api/publico/cidades/<id>/imoveis/` | Busca na cidade, com filtros, ordenação e paginação (ver abaixo) | público — vitrine (site e app) |
 | `GET /api/publico/imoveis/<id>/` | Detalhe do imóvel: fotos, dados da natureza, endereço com coordenada e corretor | público — vitrine (site e app) |
+| `POST /api/publico/imoveis/<id>/contato/` | Grava o contato — corpo `{ "canal": "WHATSAPP" \| "TELEFONE" \| "EMAIL" }`, devolve `{ "canal", "link" }` para o app abrir | público — vitrine (site e app) |
+| `GET /api/contatos/?imovel=&de=&ate=` | Caixa de contatos (mesmos filtros e mesma regra de quem vê do painel) | app, corretor e gestor |
+| `PATCH /api/contatos/<id>/` | Anota o retorno — corpo `{ "retorno": "FALEI" \| "VISITA_AGENDADA" \| "SEM_RESPOSTA" \| "DESCARTADO" }` | app, corretor e gestor |
 
 ## Site público (W10)
 
@@ -158,7 +189,7 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 - Os templates recebem os dados já passados pelos serializers públicos da W09 — por isso o site mostra o mesmo que o app e não tem como exibir proprietário, código interno ou documento.
 - A cidade escolhida fica guardada na sessão (cookie, sem login) e aparece no topo de todas as páginas.
 - Mapa com Leaflet + OpenStreetMap (gratuito, sem chave de API).
-- WhatsApp: o botão chama o corretor responsável; se ele estiver desativado, chama a empresa dona do imóvel.
+- WhatsApp: o botão chama o corretor responsável; se ele estiver desativado, chama a empresa dona do imóvel. Desde a W11 o botão passa pelo servidor, que grava o contato antes de redirecionar (ver abaixo).
 - Perfis: a vitrine da empresa e a do corretor mostram os imóveis publicados de todas as cidades. Empresa inativa e corretor desativado (ou de empresa inativa) dão 404.
 
 ## Vitrine pública (API) — regras de negócio
@@ -202,6 +233,18 @@ python manage.py semear_vitrine_dev
 - Cria imóveis das 4 naturezas (com loteamento, quadra e lote) em Campinas (24), Valinhos, Vinhedo e Indaiatuba (4 cada), com fotos geradas na hora. Códigos no formato `DEV-<CIDADE>-<NN>`.
 - Os usuários criados (corretores) ficam com senha inutilizável — não há credencial padrão.
 - O emulador Android enxerga o servidor de desenvolvimento como `10.0.2.2`; mantenha esse host no `ALLOWED_HOSTS` (como no `Web/.env.example`).
+
+## Contatos (W11) — regras de negócio
+
+- **O servidor monta o link.** Os botões da página do imóvel (WhatsApp, Ligar, Enviar e-mail) não levam o link pronto: enviam um POST para `/imovel/<id>/contato/`, que grava o contato e redireciona. O app faz o mesmo pela API e recebe o link para abrir. As regras ficam em `contatos/servicos.py`.
+- **POST, não GET.** Robôs, pré-carregamento do navegador e prévias de link fazem GET sozinhos; só um clique envia o formulário. GET no endereço de contato dá 405 e não grava nada.
+- **Mensagem padrão** com o título, o **código interno** do imóvel e o link do anúncio. O código continua fora da vitrine (HTML e JSON, regra da W09): ele só sai do servidor dentro do link, no momento do clique — o visitante o vê no texto da mensagem antes de enviar.
+- **Para quem vai:** corretor responsável; se ele estiver desativado, a empresa dona do imóvel (o contato fica com `corretor` vazio e só o gestor vê). Autônomo sem telefone/WhatsApp próprio usa os da empresa. Canal sem número/e-mail não aparece na página e é recusado na API.
+- **Só imóvel na vitrine recebe contato** (publicado, de empresa ativa) — usa `imoveis_da_vitrine()`, então segue qualquer regra nova da vitrine.
+- **Guarda o contato, não a conversa:** imóvel, corretor, canal, data e o retorno. Nenhum dado do visitante (nem campo de texto livre).
+- **Quem vê:** sempre filtrado pela empresa do usuário; o corretor vê só os contatos que recebeu, o gestor vê todos da empresa, o administrador não vê nenhum. Contato de fora cai em 404. Corretor e gestor podem anotar o retorno (falei, visita agendada, sem resposta, descartado).
+- Os botões dos perfis (empresa e corretor) continuam indo direto para o WhatsApp, sem registro: o contato pertence a um imóvel, e o perfil não tem um.
+- Limite conhecido: registramos o clique. Quem copiar o número na mão não vira contato. Ainda não há limite de requisições por visitante no endereço público.
 
 ## Painel do gestor — regras de negócio
 

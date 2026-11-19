@@ -201,12 +201,25 @@ class Imovel(EmpresaOwnedModel):
         self.publicado = False
         self.save(update_fields=["publicado"])
 
-    def mudar_situacao(self, nova, usuario, observacao=""):
-        """Única porta de mudança de situação — sempre grava quem, quando, de/para e a observação."""
+    def mudar_situacao(self, nova, usuario, observacao="", pelo_contrato=False):
+        """Única porta de mudança de situação — sempre grava quem, quando, de/para e a observação.
+
+        Com contrato assinado (W12), a situação não muda mais à mão: quem
+        decide é o contrato. Só a assinatura chama com pelo_contrato=True.
+        (Cancelar/encerrar contrato, que devolveria o imóvel, fica para uma
+        tarefa futura.)
+        """
         if nova not in self.Situacao.values:
             raise ValidationError("Situação inválida.")
         if nova == self.situacao:
             raise ValidationError(f"O imóvel já está {self.get_situacao_display().lower()}.")
+        if not pelo_contrato:
+            assinado = self.contratos.filter(situacao="ASSINADO").first()
+            if assinado:
+                raise ValidationError(
+                    f"Este imóvel tem um contrato assinado (#{assinado.pk}): a situação "
+                    "não pode ser mudada à mão enquanto o contrato estiver valendo."
+                )
 
         with transaction.atomic():
             historico = HistoricoSituacao.objects.create(

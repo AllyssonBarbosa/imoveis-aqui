@@ -3,6 +3,7 @@ Django settings for config project.
 """
 
 import re
+import sys
 from pathlib import Path
 
 import environ
@@ -40,7 +41,11 @@ INSTALLED_APPS = [
     'empresas',
     'contas',
     'proprietarios',
+    'clientes',
+    'contratos',
+    'relatorios',
     'imoveis',
+    'contatos',
     'site_publico',
 ]
 
@@ -126,6 +131,11 @@ STATICFILES_DIRS = [BASE_DIR / 'static']
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# Arquivos privados (W12): documentos do contrato e comprovantes de pagamento.
+# Ficam FORA do MEDIA_ROOT e não têm URL — só saem por uma view que confere o
+# login e a empresa (contratos/arquivos.py). Nunca aponte isto para dentro de media/.
+ARQUIVOS_PRIVADOS_ROOT = Path(env("ARQUIVOS_PRIVADOS_ROOT", default=str(BASE_DIR / "arquivos_privados")))
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
@@ -174,3 +184,10 @@ REST_FRAMEWORK = {
 LOGIN_URL = 'contas:login'
 LOGIN_REDIRECT_URL = 'contas:painel'
 LOGOUT_REDIRECT_URL = 'contas:login'
+
+
+# Só nos testes (python manage.py test): hasher de senha rápido.
+# Os testes criam centenas de usuários, e o PBKDF2 padrão é lento de propósito
+# (dificulta quebrar senha vazada). Fora dos testes continua o padrão seguro.
+if len(sys.argv) > 1 and sys.argv[1] == "test":
+    PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]

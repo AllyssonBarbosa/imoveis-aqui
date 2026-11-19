@@ -7,6 +7,8 @@ Web/.env
 Web/db.sqlite3
 Web/staticfiles/
 Web/media/
+# documentos de contrato e comprovantes de pagamento (W12) — dados pessoais, nunca vão pro git
+Web/arquivos_privados/
 
 # ===== Flutter / Dart (pasta App/) =====
 App/.dart_tool/

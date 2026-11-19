@@ -35,6 +35,13 @@ class CorretorRequiredMixin(LoginRequiredMixin, UserPassesTestMixin):
         return self.request.user.perfil == Usuario.Perfil.CORRETOR
 
 
+class CorretorOuGestorRequiredMixin(LoginRequiredMixin, UserPassesTestMixin):
+    """Telas de quem trabalha na empresa (corretor e gestor). Administrador não entra."""
+
+    def test_func(self):
+        return self.request.user.perfil in (Usuario.Perfil.CORRETOR, Usuario.Perfil.GESTOR)
+
+
 class CorretorListView(GestorRequiredMixin, ListView):
     template_name = "contas/corretor_list.html"
     context_object_name = "corretores"

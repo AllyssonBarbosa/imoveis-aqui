@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+
+{% block titulo %}Contrato #{{ contrato.pk }} — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+{% if messages %}
+    <ul class="mensagens">
+        {% for mensagem in messages %}<li>{{ mensagem }}</li>{% endfor %}
+    </ul>
+{% endif %}
+
+<div class="cabecalho-imovel">
+    <span class="codigo">Contrato #{{ contrato.pk }}</span>
+    <h1>{{ contrato.get_tipo_display }} — {{ contrato.imovel.titulo }}</h1>
+    <span class="situacao{% if contrato.assinado %} ativo{% endif %}">{{ contrato.get_situacao_display }}</span>
+</div>
+<p>
+    <a href="{% url 'contratos:contrato_list' %}">voltar para a lista</a>
+    {% if eh_gestor %} · <a href="{% url 'contratos:contrato_update' contrato.pk %}">editar</a>{% endif %}
+</p>
+
+<div class="secao">
+    <h2>Negócio</h2>
+    <p>
+        <strong>Imóvel:</strong> {{ contrato.imovel.codigo }} — {{ contrato.imovel.titulo }}<br>
+        <strong>Cliente:</strong> {{ contrato.cliente.nome_razao_social }} ({{ contrato.cliente.documento_formatado }})<br>
+        <strong>Corretor:</strong> {{ contrato.corretor.nome }}
+    </p>
+    <p>
+        {% if contrato.tipo == "VENDA" %}
+            <strong>Valor total:</strong> R$ {{ contrato.valor|floatformat:"2g" }} ·
+            <strong>entrada:</strong> R$ {{ contrato.entrada|floatformat:"2g" }} ·
+            <strong>parcelado:</strong> R$ {{ contrato.total_parcelado|floatformat:"2g" }} em {{ contrato.numero_parcelas }}x
+        {% else %}
+            <strong>Aluguel:</strong> R$ {{ contrato.valor|floatformat:"2g" }}/mês ·
+            <strong>vigência:</strong> {{ contrato.data_inicio|date:"d/m/Y" }} a {{ contrato.data_fim|date:"d/m/Y" }}
+            ({{ contrato.numero_parcelas }} meses)
+        {% endif %}
+        <br>
+        <strong>Início:</strong> {{ contrato.data_inicio|date:"d/m/Y" }} ·
+        <strong>vencimento:</strong> todo dia {{ contrato.dia_vencimento }}
+    </p>
+    {% if contrato.assinado %}
+        <p><strong>Assinado em</strong> {{ contrato.data_assinatura|date:"d/m/Y" }}{% if contrato.assinado_por %} por {{ contrato.assinado_por.nome }}{% endif %}.</p>
+    {% endif %}
+    {% if contrato.observacoes %}<p>{{ contrato.observacoes|linebreaksbr }}</p>{% endif %}
+    <p class="texto-suave">Cadastrado por {{ contrato.criado_por.nome }} em {{ contrato.criado_em|date:"d/m/Y H:i" }}.</p>
+</div>
+
+{% if eh_gestor and not contrato.assinado %}
+<div class="secao">
+    <h2>Assinatura</h2>
+    <p>
+        O contrato ainda é um <strong>rascunho</strong>. Ao assinar, o imóvel {{ contrato.imovel.codigo }}
+        passa a <strong>{% if contrato.tipo == "VENDA" %}vendido{% else %}alugado{% endif %}</strong>
+        e sai da vitrine. Depois disso, valores e datas não podem mais ser alterados.
+    </p>
+    <form method="post" action="{% url 'contratos:contrato_assinar' contrato.pk %}">
+        {% csrf_token %}
+        {{ assinatura_form.as_p }}
+        <button type="submit">Assinar contrato</button>
+    </form>
+</div>
+{% endif %}
+
+<div class="secao">
+    <h2>Documentos</h2>
+    <p class="texto-suave">Os arquivos têm dados pessoais: só baixa quem está logado e é desta empresa.</p>
+    <table>
+        <thead>
+            <tr><th>Tipo</th><th>Descrição</th><th>Enviado</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for documento in documentos %}
+            <tr>
+                <td>{{ documento.get_tipo_display }}</td>
+                <td>{{ documento.descricao|default:"—" }}</td>
+                <td>{{ documento.enviado_em|date:"d/m/Y H:i" }} por {{ documento.enviado_por.nome }}</td>
+                <td>
+                    <a href="{% url 'contratos:documento_baixar' contrato.pk documento.pk %}">Baixar</a>
+                    {% if eh_gestor %}
+                    <form method="post" action="{% url 'contratos:documento_excluir' contrato.pk documento.pk %}" style="display:inline">
+                        {% csrf_token %}
+                        <button type="submit" class="secundario">Remover</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="4">Nenhum documento anexado.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% if eh_gestor %}
+    <form method="post" enctype="multipart/form-data" action="{% url 'contratos:documento_enviar' contrato.pk %}">
+        {% csrf_token %}
+        {{ documento_form.as_p }}
+        <button type="submit">Anexar documento</button>
+    </form>
+    {% endif %}
+</div>
+
+<div class="secao">
+    <h2>Parcelas</h2>
+    {% if atrasadas %}
+    <p class="alerta-atraso"><strong>{{ atrasadas }} parcela{{ atrasadas|pluralize }} em atraso</strong> — saldo vencido de R$ {{ saldo_em_atraso|floatformat:"2g" }}.</p>
+    {% endif %}
+    <p class="texto-suave">A situação é calculada pela data de hoje e pelas baixas: venceu antes de hoje e não foi paga por inteiro, está atrasada.</p>
+    <table>
+        <thead>
+            <tr><th>Nº</th><th>Vencimento</th><th>Valor</th><th>Pago</th><th>Saldo</th><th>Situação</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for parcela in parcelas %}
+            <tr>
+                <td>{{ parcela.numero }}</td>
+                <td>{{ parcela.vencimento|date:"d/m/Y" }}</td>
+                <td>R$ {{ parcela.valor|floatformat:"2g" }}</td>
+                <td>R$ {{ parcela.total_pago|floatformat:"2g" }}</td>
+                <td>R$ {{ parcela.saldo|floatformat:"2g" }}</td>
+                <td><span class="parcela-{{ parcela.situacao|lower }}">{{ parcela.situacao_rotulo }}</span>{% if parcela.dias_em_atraso %} ({{ parcela.dias_em_atraso }} dia{{ parcela.dias_em_atraso|pluralize }}){% endif %}</td>
+                <td><a href="{% url 'contratos:parcela_detail' contrato.pk parcela.pk %}">{% if eh_gestor and contrato.assinado and not parcela.paga %}dar baixa{% else %}ver{% endif %}</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+        <tfoot>
+            <tr><th colspan="2">Total</th><th>R$ {{ total_parcelas|floatformat:"2g" }}</th><th colspan="4"></th></tr>
+        </tfoot>
+    </table>
+</div>
+{% endblock %}

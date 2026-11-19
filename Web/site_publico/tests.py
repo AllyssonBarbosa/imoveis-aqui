@@ -6,7 +6,7 @@ from rest_framework import status
 from imoveis.models import Imovel
 from imoveis.tests import (
     VitrineBase, criar_corretor, criar_empresa, criar_endereco, criar_gestor, criar_imovel,
-    criar_proprietario,
+    criar_proprietario, publicar_lote_da_vitrine,
 )
 from imoveis.vitrine import ORDENACOES
 from localizacao.models import Cidade
@@ -171,6 +171,19 @@ class PaginaImovelTests(SiteBase):
         self.assertContains(response, "360 m²")
         self.assertContains(response, "Plano")
 
+    def test_lote_mostra_quadra_condicoes_e_loteamento(self):
+        imovel_lote, _ = publicar_lote_da_vitrine(self)
+        response = self.pagina("imovel", imovel_lote.pk)
+        self.assertContains(response, "Dados do lote")
+        self.assertContains(response, "7 · quadra B")
+        self.assertNotContains(response, "identificacao")  # a quadra não pode sair como dicionário
+        self.assertContains(response, "em até 120 parcelas")
+        self.assertContains(response, "Loteamento Jardim das Flores")
+        self.assertContains(response, "Incorporadora: Incorporadora Alfa")
+        self.assertContains(response, "<li>Asfalto</li>", html=True)
+        self.assertNotContains(response, "<li>Esgoto</li>", html=True)
+        self.assertContains(response, "Lazer: Praça e quadra poliesportiva")
+
     def test_rascunho_e_empresa_inativa_dao_404(self):
         self.assertEqual(self.pagina("imovel", self.rascunho.pk).status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(self.pagina("imovel", self.da_inativa.pk).status_code, status.HTTP_404_NOT_FOUND)
@@ -251,18 +264,25 @@ class PerfisTests(SiteBase):
 class WhatsAppTests(SiteBase):
     """Critério 5: botão de contato pelo WhatsApp na página do imóvel."""
 
+    # W11: o botão não leva mais o link pronto — envia um POST para o endereço
+    # que grava o contato e então redireciona para o WhatsApp
+    def contatar(self, imovel, canal="WHATSAPP"):
+        return self.client.post(reverse("site_publico:contato", args=[imovel.pk]), {"canal": canal})
+
     def test_botao_chama_o_whatsapp_do_corretor_com_o_imovel_na_mensagem(self):
         response = self.pagina("imovel", self.casa.pk)
         self.assertContains(response, "Conversar pelo WhatsApp")
-        self.assertContains(response, "https://wa.me/5511988887777?text=")
-        self.assertContains(response, "Casa+com+quintal")
+        self.assertContains(response, f'action="{reverse("site_publico:contato", args=[self.casa.pk])}"')
+        destino = self.contatar(self.casa)["Location"]
+        self.assertTrue(destino.startswith("https://wa.me/5511988887777?text="))
+        self.assertIn("Casa+com+quintal", destino)
 
     def test_corretor_desativado_cai_no_whatsapp_da_empresa(self):
         self.corretor.is_active = False
         self.corretor.save(update_fields=["is_active"])
         response = self.pagina("imovel", self.casa.pk)
-        self.assertContains(response, "https://wa.me/5511999999999?text=")
         self.assertNotContains(response, reverse("site_publico:corretor", args=[self.corretor.pk]))
+        self.assertTrue(self.contatar(self.casa)["Location"].startswith("https://wa.me/5511999999999?text="))
 
     def test_link_whatsapp_limpa_o_numero_e_poe_o_codigo_do_brasil(self):
         self.assertTrue(link_whatsapp("(11) 98888-7777", "oi").startswith("https://wa.me/5511988887777?"))

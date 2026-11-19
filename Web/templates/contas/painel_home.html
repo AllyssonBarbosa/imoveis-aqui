@@ -13,12 +13,19 @@
     {% if user.perfil == "GESTOR" %}
         <p><a class="botao" href="{% url 'contas:corretor_list' %}">Gerenciar corretores</a></p>
         <p><a class="botao secundario" href="{% url 'imoveis:gestao_imovel_list' %}">Imóveis da empresa</a></p>
+        <p><a class="botao secundario" href="{% url 'contatos:contato_list' %}">Contatos da empresa</a></p>
+        <p><a class="botao secundario" href="{% url 'clientes:cliente_list' %}">Clientes</a></p>
+        <p><a class="botao secundario" href="{% url 'contratos:contrato_list' %}">Contratos</a></p>
+        <p><a class="botao secundario" href="{% url 'relatorios:index' %}">Relatórios</a></p>
     {% endif %}
     {% if user.perfil == "CORRETOR" %}
         <p><a class="botao secundario" href="{% url 'proprietarios:proprietario_list' %}">Proprietários</a></p>
+        <p><a class="botao secundario" href="{% url 'clientes:cliente_list' %}">Clientes</a></p>
         <p><a class="botao secundario" href="{% url 'imoveis:predio_list' %}">Prédios</a></p>
         <p><a class="botao secundario" href="{% url 'imoveis:loteamento_list' %}">Loteamentos</a></p>
         <p><a class="botao secundario" href="{% url 'imoveis:imovel_list' %}">Imóveis</a></p>
+        <p><a class="botao secundario" href="{% url 'contatos:contato_list' %}">Meus contatos</a></p>
+        <p><a class="botao secundario" href="{% url 'contratos:contrato_list' %}">Meus contratos</a></p>
     {% endif %}
 </div>
 {% endblock %}

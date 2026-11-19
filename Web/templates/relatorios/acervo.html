@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block titulo %}Relatório do acervo — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+<div class="cabecalho-pagina">
+    <h1>Acervo por natureza e situação</h1>
+</div>
+<p><a href="{% url 'relatorios:index' %}">voltar para os relatórios</a></p>
+
+<table>
+    <thead>
+        <tr>
+            <th>Natureza</th>
+            {% for coluna in relatorio.situacoes %}<th>{{ coluna.rotulo }}</th>{% endfor %}
+            <th>Total</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for linha in relatorio.linhas %}
+        <tr>
+            <td>{{ linha.rotulo }}</td>
+            {% for quantidade in linha.por_situacao.values %}<td>{{ quantidade }}</td>{% endfor %}
+            <th>{{ linha.total }}</th>
+        </tr>
+        {% endfor %}
+    </tbody>
+    <tfoot>
+        <tr>
+            <th>Total</th>
+            {% for quantidade in relatorio.totais.values %}<th>{{ quantidade }}</th>{% endfor %}
+            <th>{{ relatorio.total }}</th>
+        </tr>
+    </tfoot>
+</table>
+{% endblock %}

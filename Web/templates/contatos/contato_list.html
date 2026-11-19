@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block titulo %}Contatos — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+<div class="cabecalho-pagina">
+    <h1>{% if eh_gestor %}Contatos da empresa{% else %}Meus contatos{% endif %}</h1>
+</div>
+
+<p class="texto-suave">
+    Cada linha é alguém que clicou para falar sobre um imóvel. A conversa acontece fora do sistema;
+    aqui fica o registro e o retorno que você anotar.
+</p>
+
+{% if messages %}
+    <ul class="mensagens">
+        {% for mensagem in messages %}<li>{{ mensagem }}</li>{% endfor %}
+    </ul>
+{% endif %}
+
+{% if erros %}
+    <ul class="mensagens">
+        {% for campo, mensagem in erros.items %}<li>{{ mensagem }}</li>{% endfor %}
+    </ul>
+{% endif %}
+
+<form method="get" class="filtros-contatos">
+    <label>Imóvel
+        <select name="imovel">
+            <option value="">Todos</option>
+            {% for imovel in imoveis %}
+            <option value="{{ imovel.pk }}" {% if filtros.imovel == imovel.pk|stringformat:"d" %}selected{% endif %}>
+                {{ imovel.codigo }} — {{ imovel.titulo }}
+            </option>
+            {% endfor %}
+        </select>
+    </label>
+    <label>De <input type="date" name="de" value="{{ filtros.de }}"></label>
+    <label>Até <input type="date" name="ate" value="{{ filtros.ate }}"></label>
+    <button type="submit">Filtrar</button>
+    {% if filtros %}<a class="botao secundario" href="{% url 'contatos:contato_list' %}">Limpar</a>{% endif %}
+</form>
+
+<table>
+    <thead>
+        <tr>
+            <th>Data</th>
+            <th>Imóvel</th>
+            {% if eh_gestor %}<th>Recebido por</th>{% endif %}
+            <th>Canal</th>
+            <th>Retorno</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for contato in contatos %}
+        <tr>
+            <td>{{ contato.criado_em|date:"d/m/Y H:i" }}</td>
+            <td>{{ contato.imovel.codigo }} — {{ contato.imovel.titulo }}</td>
+            {% if eh_gestor %}
+            <td>{% if contato.corretor %}{{ contato.corretor.nome }}{% else %}Empresa (corretor desativado){% endif %}</td>
+            {% endif %}
+            <td>{{ contato.get_canal_display }}</td>
+            <td>
+                <form method="post" action="{% url 'contatos:contato_anotar_retorno' contato.pk %}" class="retorno-contato">
+                    {% csrf_token %}
+                    <input type="hidden" name="filtros" value="{{ query_atual }}">
+                    <select name="retorno" aria-label="Retorno">
+                        {% if contato.retorno == "PENDENTE" %}<option value="" selected disabled>Aguardando retorno</option>{% endif %}
+                        {% for valor, rotulo in retornos %}
+                        <option value="{{ valor }}" {% if contato.retorno == valor %}selected{% endif %}>{{ rotulo }}</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit">Salvar</button>
+                </form>
+                {% if contato.retorno_em %}<small class="texto-suave">anotado em {{ contato.retorno_em|date:"d/m/Y H:i" }}</small>{% endif %}
+            </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="{% if eh_gestor %}5{% else %}4{% endif %}">Nenhum contato encontrado.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if is_paginated %}
+<p class="paginacao">
+    {% if page_obj.has_previous %}<a href="?{% if query_sem_pagina %}{{ query_sem_pagina }}&{% endif %}page={{ page_obj.previous_page_number }}">← Anteriores</a>{% endif %}
+    Página {{ page_obj.number }} de {{ page_obj.paginator.num_pages }}
+    {% if page_obj.has_next %}<a href="?{% if query_sem_pagina %}{{ query_sem_pagina }}&{% endif %}page={{ page_obj.next_page_number }}">Próximos →</a>{% endif %}
+</p>
+{% endif %}
+{% endblock %}

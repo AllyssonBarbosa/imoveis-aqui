@@ -2954,7 +2954,8 @@ class ApiGestaoTests(MediaTemporariaMixin, APITestCase):
 
 
 class VitrinePublicaTests(APITestCase):
-    """Vitrine pública vista pelas rotas da W09 (publico-vitrine-cidade e publico-imovel)."""
+    """Regra da W08 aplicada à vitrine pública da W09 (rotas publico-vitrine-cidade e publico-imovel):
+    só imóvel disponível E publicado."""
 
     def setUp(self):
         # o limite de taxa guarda o histórico no cache; cada teste começa do zero e com taxa alta fixa,
@@ -2969,13 +2970,16 @@ class VitrinePublicaTests(APITestCase):
             self.empresa, self.corretor, self.proprietario, codigo="NOAR", publicado=True,
             endereco=endereco_completo(),
         )
-        self.rascunho = criar_imovel(self.empresa, self.corretor, self.proprietario, codigo="RASCUNHO")
+        self.cidade = self.no_ar.endereco.cidade
+        self.rascunho = criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="RASCUNHO",
+            endereco=endereco_completo(),
+        )
         self.reservado = criar_imovel(
             self.empresa, self.corretor, self.proprietario, codigo="RES", publicado=True,
             endereco=endereco_completo(),
         )
         self.reservado.mudar_situacao(Imovel.Situacao.RESERVADO, self.gestor)
-        self.cidade = self.no_ar.endereco.cidade
 
     def listar(self):
         return self.client.get(reverse("publico-vitrine-cidade", args=[self.cidade.pk]))
@@ -2993,17 +2997,29 @@ class VitrinePublicaTests(APITestCase):
             response = self.client.get(reverse("publico-imovel", args=[imovel.pk]))
             self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_imovel_vendido_ou_alugado_sai_da_vitrine(self):
+        for situacao in (Imovel.Situacao.VENDIDO, Imovel.Situacao.ALUGADO):
+            with self.subTest(situacao=situacao):
+                self.no_ar.mudar_situacao(situacao, self.gestor)
+                self.assertEqual(self.listar().data["results"], [])
+                response = self.client.get(reverse("publico-imovel", args=[self.no_ar.pk]))
+                self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_vitrine_nao_expoe_dados_internos(self):
         response = self.client.get(reverse("publico-imovel", args=[self.no_ar.pk]))
-        for campo in ("proprietario", "situacao", "publicado", "pendencias_para_publicar", "documentos"):
+        for campo in (
+            "codigo", "proprietario", "situacao", "publicado", "pendencias_para_publicar", "documentos",
+        ):
             self.assertNotIn(campo, response.data)
         self.assertEqual(response.data["endereco"]["bairro"], "Centro")
 
     def test_vitrine_e_so_leitura(self):
-        response = self.client.post(
-            reverse("publico-vitrine-cidade", args=[self.cidade.pk]), {"codigo": "X"}
-        )
-        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        for url in (
+            reverse("publico-vitrine-cidade", args=[self.cidade.pk]),
+            reverse("publico-imovel", args=[self.no_ar.pk]),
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(self.client.post(url, {"titulo": "X"}).status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
 
 class FiltrosListaImoveisTests(TestCase):
