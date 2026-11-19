@@ -11,9 +11,11 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from contas.models import Usuario
 from core.mixins import EmpresaScopedQuerySetMixin
 from core.permissions import EhCorretor, EhGestor
 from core.throttles import ThrottleVitrinePublica
+from empresas.models import Empresa
 from localizacao.models import Cidade
 
 from ..models import (
@@ -25,7 +27,14 @@ from ..models import (
     Predio,
     Quadra,
 )
-from ..vitrine import IMOVEIS_POR_PAGINA, FiltroInvalido, buscar_na_vitrine, imoveis_da_vitrine
+from ..vitrine import (
+    IMOVEIS_POR_PAGINA,
+    FiltroInvalido,
+    buscar_na_vitrine,
+    imoveis_da_empresa,
+    imoveis_da_vitrine,
+    imoveis_do_corretor,
+)
 from .serializers import (
     SERIALIZER_POR_NATUREZA,
     CaracteristicaSerializer,
@@ -318,6 +327,48 @@ class VitrineCidadeAPIView(generics.ListAPIView):
             return buscar_na_vitrine(cidade, self.request.query_params)
         except FiltroInvalido as erro:
             raise ValidationError(erro.erros)
+
+
+class VitrineCorretorAPIView(generics.ListAPIView):
+    """Imóveis na vitrine de um corretor (07.1, D-10). Pública: sem login e sem token.
+
+    Mesmo item, paginação e limite de taxa da busca da cidade, mas sem filtro, busca nem
+    ordenação: só `page` é lido (pelo paginador), mais recentes primeiro. Corretor inexistente,
+    desativado, que não é corretor ou de empresa inativa dá o mesmo 404 — não se sabe qual dos
+    casos foi. Corretor ativo sem imóveis na vitrine dá 200 com a lista vazia.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [ThrottleVitrinePublica]
+    serializer_class = ImovelVitrineSerializer
+    pagination_class = PaginacaoVitrine
+
+    def get_queryset(self):
+        corretor = get_object_or_404(
+            Usuario, pk=self.kwargs["pk"], perfil=Usuario.Perfil.CORRETOR,
+            is_active=True, empresa__ativa=True,
+        )
+        return imoveis_do_corretor(corretor)
+
+
+class VitrineEmpresaAPIView(generics.ListAPIView):
+    """Imóveis na vitrine de uma empresa, de todos os corretores dela (07.1, D-10). Pública.
+
+    Mesmas regras da vitrine do corretor: só `page` é lido, mais recentes primeiro. Empresa
+    inexistente ou inativa dá 404; empresa ativa sem imóveis na vitrine dá 200 com a lista vazia.
+    O imóvel de um corretor desativado continua aparecendo aqui (como na vitrine da cidade).
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [ThrottleVitrinePublica]
+    serializer_class = ImovelVitrineSerializer
+    pagination_class = PaginacaoVitrine
+
+    def get_queryset(self):
+        empresa = get_object_or_404(Empresa, pk=self.kwargs["pk"], ativa=True)
+        return imoveis_da_empresa(empresa)
 
 
 class BairrosDaCidadeAPIView(APIView):

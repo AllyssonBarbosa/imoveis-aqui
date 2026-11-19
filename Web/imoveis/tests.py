@@ -33,6 +33,8 @@ from .api.views import (
     ImovelVitrineDetalheAPIView,
     PaginacaoVitrine,
     VitrineCidadeAPIView,
+    VitrineCorretorAPIView,
+    VitrineEmpresaAPIView,
 )
 from .models import (
     Apartamento,
@@ -1210,6 +1212,7 @@ class VitrineLimiteDeTaxaTests(VitrineBase):
         for view in (
             VitrineCidadeAPIView, BairrosDaCidadeAPIView, CaracteristicasPublicasAPIView,
             ImovelVitrineDetalheAPIView, CidadeAtendidaAPIView,
+            VitrineCorretorAPIView, VitrineEmpresaAPIView,
         ):
             with self.subTest(view=view.__name__):
                 self.assertEqual(view.throttle_classes, [ThrottleVitrinePublica])
@@ -1655,6 +1658,8 @@ class VitrineSemTokenESemVazamentoTests(VitrineBase):
     def respostas(self):
         yield self.client.get(reverse("publico-cidades"))
         yield self.buscar()
+        yield self.client.get(reverse("publico-vitrine-corretor", args=[self.corretor.pk]))
+        yield self.client.get(reverse("publico-vitrine-empresa", args=[self.empresa.pk]))
         for imovel in (self.casa, self.apto, self.terreno, self.imovel_lote):
             yield self.client.get(reverse("publico-imovel", args=[imovel.pk]))
 
@@ -1682,6 +1687,193 @@ class VitrineSemTokenESemVazamentoTests(VitrineBase):
             self.client.patch(url, {"titulo": "x"}).status_code, status.HTTP_405_METHOD_NOT_ALLOWED
         )
         self.assertEqual(self.client.delete(url).status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+
+class VitrineDoAnuncianteTests(VitrineBase):
+    """07.1 (D-01, D-10): imóveis na vitrine de um corretor e de uma empresa, pela API pública.
+
+    Mesmo recorte, serializer, paginação e limite de taxa da vitrine da cidade; só `page` é lido.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.outro_corretor = criar_corretor(self.empresa, email="outro@teste.com")
+        self.do_outro = criar_imovel(
+            self.empresa, self.outro_corretor, self.proprietario, codigo="OUTRO-1",
+            titulo="Casa do outro corretor", endereco=criar_endereco(self.sp, "Itaim"),
+            publicado=True,
+        )
+
+    def url_corretor(self, corretor=None):
+        return reverse("publico-vitrine-corretor", args=[(corretor or self.corretor).pk])
+
+    def url_empresa(self, empresa=None):
+        return reverse("publico-vitrine-empresa", args=[(empresa or self.empresa).pk])
+
+    def ids_de(self, url, **params):
+        return self.ids(self.client.get(url, params))
+
+    def mais_recentes_primeiro(self, imoveis):
+        return [i.pk for i in sorted(imoveis, key=lambda i: (i.criado_em, i.pk), reverse=True)]
+
+    # --- recorte ---
+
+    def test_corretor_lista_so_os_imoveis_dele_na_vitrine_mais_recentes_primeiro(self):
+        esperado = self.mais_recentes_primeiro(
+            [self.casa, self.sobrado, self.apto, self.terreno, self.em_campinas]
+        )
+        self.assertEqual(self.ids_de(self.url_corretor()), esperado)
+
+    def test_corretor_nao_lista_rascunho_nem_imovel_de_outro_corretor_nem_de_empresa_inativa(self):
+        ids = self.ids_de(self.url_corretor())
+        self.assertNotIn(self.rascunho.pk, ids)
+        self.assertNotIn(self.do_outro.pk, ids)
+        self.assertNotIn(self.da_inativa.pk, ids)
+        self.assertEqual(self.ids_de(self.url_corretor(self.outro_corretor)), [self.do_outro.pk])
+
+    def test_empresa_lista_os_imoveis_de_todos_os_corretores_dela(self):
+        esperado = self.mais_recentes_primeiro(
+            [self.casa, self.sobrado, self.apto, self.terreno, self.em_campinas, self.do_outro]
+        )
+        ids = self.ids_de(self.url_empresa())
+        self.assertEqual(ids, esperado)
+        self.assertNotIn(self.da_inativa.pk, ids)
+        self.assertNotIn(self.rascunho.pk, ids)
+
+    def test_imovel_vendido_ou_reservado_sai_da_vitrine_do_anunciante(self):
+        self.casa.situacao = Imovel.Situacao.VENDIDO
+        self.casa.save(update_fields=["situacao"])
+        self.sobrado.situacao = Imovel.Situacao.RESERVADO
+        self.sobrado.save(update_fields=["situacao"])
+        for url in (self.url_corretor(), self.url_empresa()):
+            ids = self.ids_de(url)
+            self.assertNotIn(self.casa.pk, ids)
+            self.assertNotIn(self.sobrado.pk, ids)
+            self.assertIn(self.apto.pk, ids)
+
+    def test_item_tem_exatamente_as_chaves_do_cartao_da_vitrine(self):
+        for url in (self.url_corretor(), self.url_empresa()):
+            for item in self.client.get(url).json()["results"]:
+                self.assertEqual(set(item), VitrineAllowlistExataTests.CHAVES_ITEM)
+                self.assertNotIn("cidade", item)
+
+    # --- paginação ---
+
+    def test_paginacao_com_next_absoluto_na_mesma_rota(self):
+        with mock.patch.object(PaginacaoVitrine, "page_size", 2):
+            pagina1 = self.client.get(self.url_corretor())
+            pagina3 = self.client.get(self.url_corretor(), {"page": 3})
+            pagina4 = self.client.get(self.url_corretor(), {"page": 4})
+        self.assertEqual(pagina1.data["count"], 5)
+        self.assertEqual(
+            pagina1.data["next"], f"http://testserver{self.url_corretor()}?page=2"
+        )
+        self.assertEqual(len(pagina1.data["results"]), 2)
+        self.assertEqual(len(pagina3.data["results"]), 1)
+        self.assertIsNone(pagina3.data["next"])
+        self.assertEqual(pagina4.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_paginacao_da_empresa_aponta_para_a_rota_da_empresa(self):
+        with mock.patch.object(PaginacaoVitrine, "page_size", 2):
+            pagina1 = self.client.get(self.url_empresa())
+        self.assertEqual(pagina1.data["next"], f"http://testserver{self.url_empresa()}?page=2")
+
+    def test_so_page_e_lido_busca_ordenar_e_natureza_sao_ignorados(self):
+        for url in (self.url_corretor(), self.url_empresa()):
+            sem_parametros = self.ids_de(url)
+            com_parametros = self.ids_de(
+                url, busca="inexistente-xyz", ordenar="preco", natureza="TERRENO",
+            )
+            self.assertEqual(com_parametros, sem_parametros)
+
+    # --- 404 uniforme ---
+
+    def test_anunciante_inexistente_inativo_ou_que_nao_e_corretor_da_404_com_detail(self):
+        gestor = Usuario.objects.create_user(
+            email="gestor2@teste.com", senha="senha-forte-123", nome="Gestor",
+            perfil=Usuario.Perfil.GESTOR, empresa=self.empresa,
+        )
+        corretor_da_inativa = Usuario.objects.get(email="c2@teste.com")
+        desativado = criar_corretor(self.empresa, email="desativado@teste.com")
+        desativado.is_active = False
+        desativado.save(update_fields=["is_active"])
+        empresa_inativa = corretor_da_inativa.empresa
+        casos = {
+            "corretor inexistente": reverse("publico-vitrine-corretor", args=[999999]),
+            "corretor desativado": self.url_corretor(desativado),
+            "usuario gestor": self.url_corretor(gestor),
+            "corretor de empresa inativa": self.url_corretor(corretor_da_inativa),
+            "empresa inexistente": reverse("publico-vitrine-empresa", args=[999999]),
+            "empresa inativa": self.url_empresa(empresa_inativa),
+        }
+        # a mensagem do get_object_or_404 cita o modelo da rota; dentro de cada rota é a mesma
+        mensagens = {"corretor": set(), "empresa": set()}
+        for nome, url in casos.items():
+            with self.subTest(caso=nome):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+                self.assertIn("detail", response.data)
+                mensagens[nome.split()[0] if nome.startswith("empresa") else "corretor"].add(
+                    str(response.data["detail"])
+                )
+        self.assertEqual(len(mensagens["corretor"]), 1, mensagens)
+        self.assertEqual(len(mensagens["empresa"]), 1, mensagens)
+
+    def test_anunciante_ativo_sem_imoveis_da_200_com_lista_vazia(self):
+        sem_imoveis = criar_corretor(self.empresa, email="vazio@teste.com")
+        response = self.client.get(self.url_corretor(sem_imoveis))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 0)
+        self.assertEqual(response.data["results"], [])
+
+        vazia = criar_empresa(nome="Vazia", cnpj="45.723.174/0001-10")
+        response = self.client.get(self.url_empresa(vazia))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 0)
+        self.assertEqual(response.data["results"], [])
+
+    def test_desativar_o_corretor_tira_a_vitrine_dele_mas_a_da_empresa_continua(self):
+        self.corretor.is_active = False
+        self.corretor.save(update_fields=["is_active"])
+        self.assertEqual(
+            self.client.get(self.url_corretor()).status_code, status.HTTP_404_NOT_FOUND
+        )
+        self.assertIn(self.casa.pk, self.ids_de(self.url_empresa()))
+
+    # --- limite de taxa, método, token, consultas ---
+
+    def test_limite_de_taxa_vale_para_as_duas_rotas(self):
+        for url in (self.url_corretor(), self.url_empresa()):
+            cache.clear()
+            with mock.patch.object(ThrottleVitrinePublica, "rate", "2/min", create=True):
+                for _ in range(2):
+                    self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
+                response = self.client.get(url)
+            self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS, url)
+            self.assertIn("Retry-After", response)
+
+    def test_so_aceita_leitura(self):
+        for url in (self.url_corretor(), self.url_empresa()):
+            self.assertEqual(
+                self.client.post(url, {"titulo": "x"}).status_code,
+                status.HTTP_405_METHOD_NOT_ALLOWED,
+            )
+
+    def test_token_invalido_nao_derruba_as_rotas(self):
+        self.client.credentials(HTTP_AUTHORIZATION="Token token-vencido-ou-invalido")
+        for url in (self.url_corretor(), self.url_empresa()):
+            self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
+
+    def test_numero_de_consultas_nao_cresce_com_o_numero_de_itens(self):
+        for url in (self.url_corretor(), self.url_empresa()):
+            contagens = []
+            for tamanho in (2, 4):
+                with mock.patch.object(PaginacaoVitrine, "page_size", tamanho):
+                    with CaptureQueriesContext(connection) as consultas:
+                        response = self.client.get(url)
+                self.assertEqual(len(response.data["results"]), tamanho)
+                contagens.append(len(consultas))
+            self.assertEqual(contagens[0], contagens[1], url)
 
 
 class VitrineSituacaoTests(VitrineBase):
@@ -2268,6 +2460,18 @@ class VitrineAllowlistExataTests(VitrineBase):
         for item in itens:
             with self.subTest(id=item["id"], natureza=item["natureza"]):
                 self.assertEqual(set(item), self.CHAVES_ITEM)
+
+    def test_item_da_vitrine_do_corretor_e_da_empresa_tem_as_chaves_exatas(self):
+        rotas = (
+            reverse("publico-vitrine-corretor", args=[self.corretor.pk]),
+            reverse("publico-vitrine-empresa", args=[self.empresa.pk]),
+        )
+        for rota in rotas:
+            itens = self.client.get(rota).json()["results"]
+            self.assertTrue(itens, rota)
+            for item in itens:
+                with self.subTest(rota=rota, id=item["id"]):
+                    self.assertEqual(set(item), self.CHAVES_ITEM)
 
     def test_detalhe_de_toda_natureza_tem_as_chaves_exatas(self):
         for imovel in (self.casa, self.apto, self.terreno, self.imovel_lote):

@@ -91,6 +91,33 @@ def imoveis_da_vitrine():
     )
 
 
+def imoveis_do_corretor(corretor):
+    """Imóveis na vitrine de um corretor (o corretor responsável), mais recentes primeiro.
+
+    Mesma regra de visibilidade do site (WEB-09) e da API: parte de imoveis_da_vitrine(),
+    sem filtro de cidade. Usada pela vitrine do corretor da API (07.1) e pela página dele no site.
+    """
+    return (
+        imoveis_da_vitrine()
+        .filter(corretor_responsavel=corretor)
+        .order_by("-criado_em", "-id")
+        .prefetch_related("fotos")
+    )
+
+
+def imoveis_da_empresa(empresa):
+    """Imóveis na vitrine de uma empresa (de todos os corretores dela), mais recentes primeiro.
+
+    Mesma regra de imoveis_do_corretor(): a vitrine da cidade, o site e a API não divergem.
+    """
+    return (
+        imoveis_da_vitrine()
+        .filter(empresa=empresa)
+        .order_by("-criado_em", "-id")
+        .prefetch_related("fotos")
+    )
+
+
 def cidades_atendidas():
     """Só as cidades que têm imóvel na vitrine — o visitante nunca escolhe uma cidade vazia."""
     return Cidade.objects.filter(pk__in=imoveis_da_vitrine().values("cidade_anuncio"))
