@@ -9,6 +9,7 @@ urlpatterns = [
     path("novo/", views.ImovelCreateView.as_view(), name="imovel_create"),
     path("<int:pk>/", views.ImovelDetailView.as_view(), name="imovel_detail"),
     path("<int:pk>/detalhes/", views.imovel_atualizar_detalhes, name="imovel_atualizar_detalhes"),
+    path("<int:pk>/situacao/", views.imovel_mudar_situacao, name="imovel_mudar_situacao"),
     path("<int:pk>/endereco/", views.imovel_atualizar_endereco, name="imovel_atualizar_endereco"),
     path("<int:pk>/fotos/", views.imovel_upload_fotos, name="imovel_upload_fotos"),
     path("<int:pk>/fotos/<int:foto_id>/capa/", views.imovel_definir_capa, name="imovel_definir_capa"),
