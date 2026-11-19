@@ -34,8 +34,13 @@ class UsuarioViewSet(EmpresaScopedQuerySetMixin, viewsets.ReadOnlyModelViewSet):
 
 
 class CorretorPublicoAPIView(generics.RetrieveAPIView):
-    """Perfil público do corretor, sem login. Corretor desativado não aparece."""
+    """Perfil público do corretor, sem login.
+
+    Corretor desativado ou de empresa inativa não aparece (404) — a mesma regra do site (WEB-09).
+    """
 
     permission_classes = [AllowAny]
     serializer_class = CorretorPublicoSerializer
-    queryset = Usuario.objects.filter(perfil=Usuario.Perfil.CORRETOR, is_active=True)
+    queryset = Usuario.objects.filter(
+        perfil=Usuario.Perfil.CORRETOR, is_active=True, empresa__ativa=True
+    )

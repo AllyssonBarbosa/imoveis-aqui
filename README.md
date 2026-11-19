@@ -146,8 +146,10 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `GET/POST /api/fotos-imovel/?imovel=<id>` | Lista e envia fotos (várias de uma vez, campo `imagens`) | app, corretor |
 | `POST /api/fotos-imovel/<id>/definir_capa/` | Marca uma foto como capa (desmarca a anterior) | app, corretor |
 | `GET /api/caracteristicas/` | Lista as características cadastradas pelo administrador | app, corretor |
-| `GET /api/publico/corretores/<id>/` | Perfil público do corretor (nome, CRECI, foto, telefone, WhatsApp, e-mail, apresentação) | público — vitrine (site e app) |
+| `GET /api/publico/corretores/<id>/` | Perfil público do corretor (nome, CRECI, foto, telefone, WhatsApp, e-mail, apresentação); corretor desativado ou de empresa inativa dá 404 | público — vitrine (site e app) |
 | `GET /api/publico/empresas/<id>/` | Perfil público da empresa, com a lista de corretores ativos | público — vitrine (site e app) |
+| `GET /api/publico/corretores/<id>/imoveis/` | Imóveis na vitrine do corretor, mais recentes primeiro, paginados como a busca da cidade; só `page` é lido; corretor inexistente, desativado ou de empresa inativa -> 404 | público — vitrine (site e app) |
+| `GET /api/publico/empresas/<id>/imoveis/` | Imóveis na vitrine da empresa, mais recentes primeiro, paginados como a busca da cidade; só `page` é lido; empresa inexistente ou inativa -> 404 | público — vitrine (site e app) |
 | `GET /api/publico/cidades/` | Cidades atendidas (com UF) — só as que têm imóvel publicado | público — vitrine (site e app) |
 | `GET /api/publico/cidades/<id>/imoveis/` | Busca na cidade, com filtros, ordenação e paginação (ver abaixo) | público — vitrine (site e app) |
 | `GET /api/publico/imoveis/<id>/` | Detalhe do imóvel: fotos, dados da natureza, endereço com coordenada e corretor | público — vitrine (site e app) |

@@ -20,7 +20,8 @@ from empresas.models import Empresa
 from imoveis.api.serializers import ImovelVitrineDetalheSerializer, ImovelVitrineSerializer
 from imoveis.models import Caracteristica, Imovel
 from imoveis.vitrine import (
-    IMOVEIS_POR_PAGINA, FiltroInvalido, buscar_na_vitrine, cidades_atendidas, imoveis_da_vitrine,
+    IMOVEIS_POR_PAGINA, FiltroInvalido, buscar_na_vitrine, cidades_atendidas, imoveis_da_empresa,
+    imoveis_da_vitrine, imoveis_do_corretor,
 )
 from localizacao.models import Cidade
 
@@ -136,10 +137,7 @@ def imovel(request, pk):
 def empresa(request, pk):
     objeto = get_object_or_404(Empresa, pk=pk, ativa=True)
     dados = EmpresaPublicaSerializer(objeto, context={"request": request}).data
-    pagina, cartoes = _paginar(
-        request,
-        imoveis_da_vitrine().filter(empresa=objeto).order_by("-criado_em", "-id").prefetch_related("fotos"),
-    )
+    pagina, cartoes = _paginar(request, imoveis_da_empresa(objeto))
     return _renderizar(request, "site_publico/empresa.html", {
         "empresa": dados,
         "imoveis": cartoes,
@@ -155,11 +153,7 @@ def corretor(request, pk):
         pk=pk, perfil=Usuario.Perfil.CORRETOR, is_active=True, empresa__ativa=True,
     )
     dados = CorretorPublicoSerializer(objeto, context={"request": request}).data
-    pagina, cartoes = _paginar(
-        request,
-        imoveis_da_vitrine().filter(corretor_responsavel=objeto)
-        .order_by("-criado_em", "-id").prefetch_related("fotos"),
-    )
+    pagina, cartoes = _paginar(request, imoveis_do_corretor(objeto))
     return _renderizar(request, "site_publico/corretor.html", {
         "corretor": dados,
         "empresa_nome": objeto.empresa.razao_social_ou_nome,
