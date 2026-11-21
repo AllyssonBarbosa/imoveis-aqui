@@ -5,6 +5,8 @@ from .views import (
     CaracteristicasPublicasAPIView,
     ImovelVitrineDetalheAPIView,
     VitrineCidadeAPIView,
+    VitrineCorretorAPIView,
+    VitrineEmpresaAPIView,
 )
 
 urlpatterns = [
@@ -20,4 +22,14 @@ urlpatterns = [
         "caracteristicas/", CaracteristicasPublicasAPIView.as_view(), name="publico-caracteristicas"
     ),
     path("imoveis/<int:pk>/", ImovelVitrineDetalheAPIView.as_view(), name="publico-imovel"),
+    path(
+        "corretores/<int:pk>/imoveis/",
+        VitrineCorretorAPIView.as_view(),
+        name="publico-vitrine-corretor",
+    ),
+    path(
+        "empresas/<int:pk>/imoveis/",
+        VitrineEmpresaAPIView.as_view(),
+        name="publico-vitrine-empresa",
+    ),
 ]

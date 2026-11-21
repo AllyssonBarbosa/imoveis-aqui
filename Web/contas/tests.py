@@ -286,6 +286,24 @@ class CorretorPublicoApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
+class CorretorPublicoEmpresaInativaTests(APITestCase):
+    """07.1 (D-11): corretor de empresa inativa não tem perfil público — como no site (WEB-09)."""
+
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+
+    def test_corretor_de_empresa_inativa_da_404(self):
+        self.empresa.ativa = False
+        self.empresa.save(update_fields=["ativa"])
+        response = self.client.get(reverse("publico-corretor", args=[self.corretor.pk]))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_corretor_de_empresa_ativa_continua_200(self):
+        response = self.client.get(reverse("publico-corretor", args=[self.corretor.pk]))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
 class EmpresaPublicaApiTests(APITestCase):
     """Critério 5 da W02: perfil público da empresa, sem login."""
 
