@@ -168,7 +168,8 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `GET /api/baixas/<id>/comprovante/` | Baixa o comprovante, conferindo empresa e perfil | app, gestor e corretor do contrato |
 | `POST /api/contratos/<id>/assinar/` | Assina o contrato — corpo `{ "data_assinatura": "AAAA-MM-DD" }` | app, gestor |
 | `GET /api/relatorios/acervo/`, `GET /api/relatorios/contatos/?de=&ate=` e `GET /api/relatorios/parcelas/?dias=30` | Os mesmos relatórios do painel (dinheiro em texto, ex.: `"1234.50"`) | app, gestor |
-| `GET/POST /api/imoveis/` | Lista e cadastra imóveis da própria empresa | app, corretor |
+| `GET /api/imoveis/?busca=&situacao=&page=` | Acervo do corretor: imóveis da própria empresa, paginados (20 por página, `next` absoluto), busca por código ou título, filtro por situação (`DISPONIVEL`, `RESERVADO`, `VENDIDO`, `ALUGADO`; filtro inválido é ignorado) e só os 10 campos do cartão (`meu_imovel`, `na_vitrine` calculados no servidor) | app, corretor |
+| `POST /api/imoveis/` | Cadastra imóvel da própria empresa | app, corretor |
 | `GET/PUT /api/imoveis/<id>/endereco/` | Lê/grava o endereço do imóvel (cidade, CEP, latitude, longitude) | app, corretor |
 | `POST /api/imoveis/<id>/publicar/` | Publica o imóvel — recusa se faltar cidade ou coordenada | app, corretor |
 | `GET/POST /api/fotos-imovel/?imovel=<id>` | Lista e envia fotos (várias de uma vez, campo `imagens`) | app, corretor |

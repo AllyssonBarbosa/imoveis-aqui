@@ -18,6 +18,7 @@ from core.throttles import ThrottleVitrinePublica
 from empresas.models import Empresa
 from localizacao.models import Cidade
 
+from ..forms import FiltroImovelForm
 from ..models import (
     Caracteristica,
     DocumentoImovel,
@@ -88,7 +89,9 @@ class ImovelViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
         """Acervo da empresa do corretor, na ordem fixa que permite paginar com estabilidade.
 
         Ordem das camadas na lista: empresa (mixin, sempre primeiro — isolamento multitenant, AC-5)
-        -> anotação `na_vitrine` (regra única `Imovel.objects.na_vitrine()`, D-07) -> ordem
+        -> `FiltroImovelForm` com busca e situação (a mesma regra do painel do corretor no site, D-11;
+        filtro inválido é ignorado, nunca erro; `corretor` e `empresa` na URL nem existem no
+        formulário) -> anotação `na_vitrine` (regra única `Imovel.objects.na_vitrine()`, D-07) -> ordem
         (`-criado_em`, `-pk`: o `pk` desempata, senão a página pode repetir ou pular imóvel).
         `select_related(None)` descarta os JOINs de natureza/endereço que o cartão não usa, sem
         mexer no `prefetch_related("fotos")` nem no queryset do detalhe.
@@ -96,8 +99,13 @@ class ImovelViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
         queryset = super().get_queryset()
         if self.action != "list":
             return queryset
+        filtro = FiltroImovelForm(
+            self.request.query_params or None,
+            empresa=self.request.user.empresa,
+            campos=["busca", "situacao"],
+        )
         return (
-            queryset.select_related(None)
+            filtro.filtrar(queryset.select_related(None))
             .annotate(na_vitrine=Exists(Imovel.objects.na_vitrine().filter(pk=OuterRef("pk"))))
             .order_by("-criado_em", "-pk")
         )
