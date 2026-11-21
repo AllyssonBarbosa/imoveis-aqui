@@ -6,6 +6,7 @@ from rest_framework.views import APIView
 
 from core.mixins import EmpresaScopedQuerySetMixin
 from core.permissions import PertenceAUmaEmpresa
+from core.throttles import ThrottleLoginPorEmail, ThrottleLoginPorIp
 
 from contas.models import Usuario
 
@@ -13,9 +14,16 @@ from .serializers import CorretorPublicoSerializer, LoginSerializer, UsuarioSeri
 
 
 class LoginAPIView(APIView):
-    """Devolve um token válido para o usuário autenticado (gestor ou corretor)."""
+    """Devolve um token válido para o usuário autenticado (gestor ou corretor).
 
+    Limita as tentativas por e-mail e por IP (429 com Retry-After) antes de conferir a senha, e a
+    resposta do limite é igual para e-mail existente ou não. Não autentica a requisição por
+    cabeçalho: um `Authorization: Token <revogado>` mandado ao login não pode derrubá-lo com 401.
+    """
+
+    authentication_classes = []
     permission_classes = [AllowAny]
+    throttle_classes = [ThrottleLoginPorEmail, ThrottleLoginPorIp]
 
     def post(self, request):
         serializer = LoginSerializer(data=request.data, context={"request": request})

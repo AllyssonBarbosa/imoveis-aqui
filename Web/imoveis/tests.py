@@ -21,7 +21,7 @@ from rest_framework.test import APITestCase
 
 from contas.models import Usuario
 from core.models import Endereco
-from core.throttles import ThrottleVitrinePublica
+from core.throttles import ThrottleLoginPorEmail, ThrottleLoginPorIp, ThrottleVitrinePublica
 from empresas.models import Empresa
 from localizacao.api.views import CidadeAtendidaAPIView
 from localizacao.models import Cidade
@@ -3497,6 +3497,14 @@ class AcervoApiTests(MediaTemporariaMixin, APITestCase):
     }
 
     def setUp(self):
+        # O teste ponta a ponta faz POST em api-login: sem isto ele dependeria da taxa do ambiente e do
+        # cache deixado por outro teste (Pitfall 9).
+        cache.clear()
+        self.addCleanup(cache.clear)
+        for classe in (ThrottleLoginPorEmail, ThrottleLoginPorIp):
+            patcher = mock.patch.object(classe, "rate", TAXA_ALTA_NOS_TESTES, create=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.empresa = criar_empresa()
         self.corretor = criar_corretor(self.empresa)
         self.colega = criar_corretor(self.empresa, email="colega@teste.com")
