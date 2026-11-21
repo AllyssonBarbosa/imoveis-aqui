@@ -72,7 +72,7 @@ O `.env` não vai para o git (está no `.gitignore`) — cada máquina tem o seu
 
 Os documentos de contrato e os comprovantes de pagamento (W12) ficam em `Web/arquivos_privados/` — fora de `media/`, sem URL pública e também fora do git. Para usar outra pasta, defina `ARQUIVOS_PRIVADOS_ROOT` no `.env` (nunca dentro de `media/`).
 
-Duas variáveis opcionais controlam o limite de taxa das rotas públicas da vitrine (os padrões já funcionam): `VITRINE_TAXA_ANONIMA` (padrão `120/min` por IP) e `NUM_PROXIES` (padrão `0`, usa o IP da conexão; atrás de proxy reverso, o número de proxies confiáveis — senão todos os visitantes dividem o IP do proxy e o mesmo limite). `VITRINE_TAXA_ANONIMA` é validada na partida (`<número>/<período>`, ex. `120/min`); formato inválido para a aplicação com `ImproperlyConfigured`. **Em produção informe `NUM_PROXIES` sempre** (o `.env.example` deixa a linha comentada de propósito): sem a variável fora do `DEBUG`, `python manage.py check --deploy` mostra o aviso `core.W001`. Rode esse comando no checklist de deploy.
+Duas variáveis opcionais controlam o limite de taxa das rotas públicas da vitrine (os padrões já funcionam): `VITRINE_TAXA_ANONIMA` (padrão `120/min` por IP) e `NUM_PROXIES` (padrão `0`, usa o IP da conexão; atrás de proxy reverso, o número de proxies confiáveis — senão todos os visitantes dividem o IP do proxy e o mesmo limite). `VITRINE_TAXA_ANONIMA` é validada na partida (`<número>/<período>`, ex. `120/min`); formato inválido para a aplicação com `ImproperlyConfigured`. **Em produção informe `NUM_PROXIES` sempre** (o `.env.example` deixa a linha comentada de propósito): sem a variável fora do `DEBUG`, `python manage.py check --deploy` mostra o aviso `core.W001`. Rode esse comando no checklist de deploy. O login da API tem mais duas: `LOGIN_TAXA_POR_EMAIL` (padrão `10/hour`) e `LOGIN_TAXA_POR_IP` (padrão `30/hour`), também validadas na partida; o DRF só aceita os períodos `s`, `m`, `h` e `d`, então o `Retry-After` pode chegar a 3600 s. O limite por e-mail é o que freia força bruta (um e-mail muito testado fica bloqueado, inclusive para o dono); o por IP acomoda um escritório atrás de NAT.
 
 ### 4. Banco de dados
 
@@ -156,7 +156,9 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `/painel/contatos/?imovel=&de=&ate=` | Caixa de contatos, com filtro por imóvel e período e o retorno anotado na própria linha | corretor (os dele) e gestor (os da empresa) |
 | `POST /imovel/<id>/contato/` | Site: grava o contato e redireciona para WhatsApp, `tel:` ou `mailto:` (campo `canal`) | público, sem login |
 | `/admin/` | Django Admin — cadastro de empresas, usuários e características | administrador |
-| `POST /api/auth/login/` | Login da API — corpo `{ "email", "password" }`, devolve `{ "token" }` | app (gestor/corretor) |
+| `POST /api/auth/login/` | Login da API — corpo `{ "email", "password" }`, devolve `{ "token" }`; limita as tentativas por e-mail e por IP (passou do limite: **429** com `Retry-After` e `{detail}`, igual para e-mail existente ou não) | app (gestor/corretor) |
+| `GET /api/auth/eu/` | Papel de quem está logado: `{ "perfil": "CORRETOR" \| "GESTOR" \| "ADMINISTRADOR" }` (só `Authorization: Token <token>`) | app, autenticado |
+| `POST /api/auth/sair/` | Sair: revoga o token do usuário (204); desconecta todos os aparelhos dele, o site não é afetado | app, autenticado |
 | `GET /api/usuarios/` | Lista os usuários da própria empresa (`Authorization: Token <token>`) | app, autenticado |
 | `GET/POST /api/proprietarios/?busca=` | Lista (com busca) e cadastra proprietários da própria empresa | app, corretor |
 | `GET/POST /api/clientes/?busca=` e `GET/PUT/PATCH /api/clientes/<id>/` | Clientes da própria empresa (sem exclusão) | app, corretor e gestor |

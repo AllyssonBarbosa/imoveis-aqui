@@ -1,4 +1,5 @@
-from rest_framework import generics, viewsets
+from rest_framework import generics, status, viewsets
+from rest_framework.authentication import TokenAuthentication
 from rest_framework.authtoken.models import Token
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -31,6 +32,35 @@ class LoginAPIView(APIView):
         usuario = serializer.validated_data["usuario"]
         token, _ = Token.objects.get_or_create(user=usuario)
         return Response({"token": token.key})
+
+
+class EuAPIView(APIView):
+    """Diz ao app o papel de quem está logado: `{"perfil": "CORRETOR"|"GESTOR"|"ADMINISTRADOR"}`.
+
+    O app roteia a tela por esse papel (D-02, D-B). Devolve só o perfil de propósito (nenhuma tela
+    usa nome nem empresa); por isso não reutiliza o UsuarioSerializer, que expõe e-mail e empresa.
+    Só aceita `Authorization: Token`: é rota do app, sem sessão do site nem CSRF.
+    """
+
+    authentication_classes = [TokenAuthentication]
+
+    def get(self, request):
+        return Response({"perfil": request.user.perfil})
+
+
+class SairAPIView(APIView):
+    """Sair: revoga no servidor a chave do usuário (204).
+
+    O token é único por usuário (o login usa get_or_create), então apagar a chave desconecta todos
+    os aparelhos dele; o site, que usa sessão, não é afetado. Um novo login gera chave nova. Repetir
+    o Sair com a chave já revogada dá 401 (o app trata como sucesso). Só aceita `Authorization: Token`.
+    """
+
+    authentication_classes = [TokenAuthentication]
+
+    def post(self, request):
+        Token.objects.filter(user=request.user).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class UsuarioViewSet(EmpresaScopedQuerySetMixin, viewsets.ReadOnlyModelViewSet):

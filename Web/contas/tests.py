@@ -318,6 +318,102 @@ class LoginLimiteDeTentativasTests(APITestCase):
         self.assertEqual(LoginAPIView.authentication_classes, [])
 
 
+class EuApiTests(APITestCase):
+    """D-02/D-B: GET /api/auth/eu/ devolve só o papel de quem manda o token."""
+
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.url = reverse("api-eu")
+
+    def _com_token(self, usuario):
+        token = Token.objects.create(user=usuario)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_cada_perfil_recebe_so_o_proprio_papel(self):
+        administrador = Usuario.objects.create_superuser(
+            email="admin@teste.com", senha="senha-forte-123", nome="Admin"
+        )
+        casos = [
+            (criar_corretor(self.empresa), "CORRETOR"),
+            (criar_gestor(self.empresa), "GESTOR"),
+            (administrador, "ADMINISTRADOR"),
+        ]
+        for usuario, perfil in casos:
+            with self.subTest(perfil=perfil):
+                self._com_token(usuario)
+                resposta = self.client.get(self.url)
+                self.assertEqual(resposta.status_code, status.HTTP_200_OK)
+                self.assertEqual(set(resposta.data), {"perfil"})
+                self.assertEqual(resposta.data, {"perfil": perfil})
+
+    def test_sem_token_da_401_com_www_authenticate(self):
+        resposta = self.client.get(self.url)
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertIn("WWW-Authenticate", resposta)
+
+    def test_so_com_sessao_do_site_da_401(self):
+        self.client.force_login(criar_corretor(self.empresa))
+        resposta = self.client.get(self.url)
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_token_inexistente_da_401(self):
+        self.client.credentials(HTTP_AUTHORIZATION="Token chave-que-nao-existe")
+        resposta = self.client.get(self.url)
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class SairApiTests(APITestCase):
+    """AC-2: POST /api/auth/sair/ revoga o token no servidor (token único por usuário)."""
+
+    def setUp(self):
+        fixar_taxa_alta_no_login(self)
+        self.empresa = criar_empresa()
+        self.usuario = criar_corretor(self.empresa)
+        self.token = Token.objects.create(user=self.usuario)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
+
+    def test_sair_apaga_o_token_e_responde_204(self):
+        resposta = self.client.post(reverse("api-sair"))
+        self.assertEqual(resposta.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Token.objects.filter(user=self.usuario).exists())
+
+    def test_mesma_chave_depois_do_sair_da_401_em_qualquer_rota(self):
+        self.client.post(reverse("api-sair"))
+        self.assertEqual(self.client.get(reverse("api-eu")).status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(self.client.get(reverse("imovel-list")).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_novo_login_depois_do_sair_gera_chave_diferente(self):
+        chave_antiga = self.token.key
+        self.client.post(reverse("api-sair"))
+        self.client.credentials()
+        resposta = self.client.post(
+            reverse("api-login"), {"email": "corretor@teste.com", "password": "senha-forte-123"}
+        )
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK)
+        self.assertNotEqual(resposta.data["token"], chave_antiga)
+
+    def test_repetir_o_sair_com_a_chave_revogada_da_401(self):
+        self.client.post(reverse("api-sair"))
+        resposta = self.client.post(reverse("api-sair"))
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_sair_sem_token_da_401(self):
+        self.client.credentials()
+        resposta = self.client.post(reverse("api-sair"))
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_sair_so_com_sessao_do_site_da_401(self):
+        self.client.credentials()
+        self.client.force_login(self.usuario)
+        resposta = self.client.post(reverse("api-sair"))
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertTrue(Token.objects.filter(user=self.usuario).exists())
+
+    def test_get_no_sair_da_405(self):
+        resposta = self.client.get(reverse("api-sair"))
+        self.assertEqual(resposta.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+
 class IsolamentoMultitenantTests(APITestCase):
     """Critério 6 da W01: consulta filtrada por empresa; URL não abre dado de outra."""
 
