@@ -19,7 +19,58 @@
     {% endif %}
     <span class="situacao">{{ imovel.get_situacao_display }}</span>
 </div>
-<p class="helptext">Publicação, situação e documentos são controlados pelo gestor.</p>
+<p class="helptext">Publicação e documentos são controlados pelo gestor.</p>
+
+<div class="secao">
+    <h2>Situação</h2>
+    <p>
+        <strong>{{ imovel.get_situacao_display }}</strong> desde {{ imovel.situacao_desde|date:"d/m/Y H:i" }}.
+    </p>
+
+    {% if pode_mudar_situacao %}
+    <form method="post" action="{% url 'imoveis:imovel_mudar_situacao' imovel.pk %}">
+        {% csrf_token %}
+        {{ situacao_form.non_field_errors }}
+        <div class="grade-formulario">
+            {% for field in situacao_form %}
+            <p>
+                {{ field.label_tag }}
+                {{ field }}
+                {% if field.help_text %}<span class="helptext">{{ field.help_text }}</span>{% endif %}
+                {{ field.errors }}
+            </p>
+            {% endfor %}
+        </div>
+        <button type="submit">Mudar situação</button>
+    </form>
+    {% else %}
+    <p class="helptext">
+        Só o corretor responsável ({{ imovel.corretor_responsavel.nome }}) ou o gestor podem mudar a situação deste imóvel.
+    </p>
+    {% endif %}
+
+    <h3>Histórico</h3>
+    {% if historico %}
+    <table>
+        <thead>
+            <tr><th>Quando</th><th>Quem</th><th>De</th><th>Para</th><th>Observação</th></tr>
+        </thead>
+        <tbody>
+            {% for mudanca in historico %}
+            <tr>
+                <td>{{ mudanca.alterado_em|date:"d/m/Y H:i" }}</td>
+                <td>{{ mudanca.alterado_por.nome }}</td>
+                <td>{{ mudanca.get_situacao_anterior_display }}</td>
+                <td>{{ mudanca.get_situacao_nova_display }}</td>
+                <td>{{ mudanca.observacao|default:"—" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="area-vazia">Nenhuma mudança ainda — disponível desde o cadastro.</p>
+    {% endif %}
+</div>
 
 <div class="secao">
     <h2>Dados</h2>

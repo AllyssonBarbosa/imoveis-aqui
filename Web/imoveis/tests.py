@@ -3158,7 +3158,8 @@ class ApiGestaoTests(MediaTemporariaMixin, APITestCase):
 
 
 class VitrinePublicaTests(APITestCase):
-    """Vitrine pública vista pelas rotas da W09 (publico-vitrine-cidade e publico-imovel)."""
+    """Regra da W08 aplicada à vitrine pública da W09 (rotas publico-vitrine-cidade e publico-imovel):
+    só imóvel disponível E publicado."""
 
     def setUp(self):
         # o limite de taxa guarda o histórico no cache; cada teste começa do zero e com taxa alta fixa,
@@ -3173,13 +3174,16 @@ class VitrinePublicaTests(APITestCase):
             self.empresa, self.corretor, self.proprietario, codigo="NOAR", publicado=True,
             endereco=endereco_completo(),
         )
-        self.rascunho = criar_imovel(self.empresa, self.corretor, self.proprietario, codigo="RASCUNHO")
+        self.cidade = self.no_ar.endereco.cidade
+        self.rascunho = criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="RASCUNHO",
+            endereco=endereco_completo(),
+        )
         self.reservado = criar_imovel(
             self.empresa, self.corretor, self.proprietario, codigo="RES", publicado=True,
             endereco=endereco_completo(),
         )
         self.reservado.mudar_situacao(Imovel.Situacao.RESERVADO, self.gestor)
-        self.cidade = self.no_ar.endereco.cidade
 
     def listar(self):
         return self.client.get(reverse("publico-vitrine-cidade", args=[self.cidade.pk]))
@@ -3197,17 +3201,29 @@ class VitrinePublicaTests(APITestCase):
             response = self.client.get(reverse("publico-imovel", args=[imovel.pk]))
             self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_imovel_vendido_ou_alugado_sai_da_vitrine(self):
+        for situacao in (Imovel.Situacao.VENDIDO, Imovel.Situacao.ALUGADO):
+            with self.subTest(situacao=situacao):
+                self.no_ar.mudar_situacao(situacao, self.gestor)
+                self.assertEqual(self.listar().data["results"], [])
+                response = self.client.get(reverse("publico-imovel", args=[self.no_ar.pk]))
+                self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_vitrine_nao_expoe_dados_internos(self):
         response = self.client.get(reverse("publico-imovel", args=[self.no_ar.pk]))
-        for campo in ("proprietario", "situacao", "publicado", "pendencias_para_publicar", "documentos"):
+        for campo in (
+            "codigo", "proprietario", "situacao", "publicado", "pendencias_para_publicar", "documentos",
+        ):
             self.assertNotIn(campo, response.data)
         self.assertEqual(response.data["endereco"]["bairro"], "Centro")
 
     def test_vitrine_e_so_leitura(self):
-        response = self.client.post(
-            reverse("publico-vitrine-cidade", args=[self.cidade.pk]), {"codigo": "X"}
-        )
-        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        for url in (
+            reverse("publico-vitrine-cidade", args=[self.cidade.pk]),
+            reverse("publico-imovel", args=[self.no_ar.pk]),
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(self.client.post(url, {"titulo": "X"}).status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
 
 class FiltrosListaImoveisTests(TestCase):
@@ -3324,3 +3340,148 @@ class FiltrosListaImoveisTests(TestCase):
         response = self.client.get(reverse("imoveis:imovel_list"), {"busca": "nada-disso"})
         self.assertContains(response, "Nenhum imóvel com esses filtros")
         self.assertContains(response, "Limpar")
+
+
+class CorretorMudaSituacaoTests(APITestCase):
+    """O corretor responsável muda a situação do imóvel, com histórico; outros corretores não."""
+
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.colega = criar_corretor(self.empresa, email="colega@teste.com")
+        self.gestor = criar_gestor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        self.imovel = criar_imovel(self.empresa, self.corretor, self.proprietario)
+
+        outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        self.corretor_de_fora = criar_corretor(outra_empresa, email="fora@teste.com")
+        self.de_fora = criar_imovel(
+            outra_empresa, self.corretor_de_fora,
+            criar_proprietario(outra_empresa, documento="10902516612"), codigo="FORA",
+        )
+
+    # ---------------------------------------------------------------- regra (model)
+    def test_quem_pode_mudar_a_situacao(self):
+        self.assertTrue(self.imovel.pode_mudar_situacao(self.corretor))
+        self.assertTrue(self.imovel.pode_mudar_situacao(self.gestor))
+        self.assertFalse(self.imovel.pode_mudar_situacao(self.colega))
+        self.assertFalse(self.imovel.pode_mudar_situacao(self.corretor_de_fora))
+        gestor_de_fora = criar_gestor(self.de_fora.empresa, email="gestor-fora@teste.com")
+        self.assertFalse(self.imovel.pode_mudar_situacao(gestor_de_fora))
+
+    def test_corretor_responsavel_muda_para_qualquer_situacao(self):
+        for situacao in (Imovel.Situacao.RESERVADO, Imovel.Situacao.VENDIDO,
+                         Imovel.Situacao.ALUGADO, Imovel.Situacao.DISPONIVEL):
+            self.imovel.mudar_situacao(situacao, self.corretor)
+            self.assertEqual(Imovel.objects.get(pk=self.imovel.pk).situacao, situacao)
+        self.assertEqual(self.imovel.historico_situacao.count(), 4)
+        self.assertTrue(all(h.alterado_por == self.corretor for h in self.imovel.historico_situacao.all()))
+
+    def test_colega_nao_muda_a_situacao_nem_pelo_model(self):
+        with self.assertRaises(ValidationError):
+            self.imovel.mudar_situacao(Imovel.Situacao.RESERVADO, self.colega)
+        self.assertEqual(Imovel.objects.get(pk=self.imovel.pk).situacao, Imovel.Situacao.DISPONIVEL)
+        self.assertFalse(self.imovel.historico_situacao.exists())
+
+    # ---------------------------------------------------------------- painel
+    def test_painel_corretor_responsavel_muda_situacao_com_historico(self):
+        self.client.force_login(self.corretor)
+        url = reverse("imoveis:imovel_mudar_situacao", args=[self.imovel.pk])
+        response = self.client.post(url, {"situacao": "RESERVADO", "observacao": "Sinal pago"})
+        self.assertRedirects(response, reverse("imoveis:imovel_detail", args=[self.imovel.pk]))
+
+        historico = self.imovel.historico_situacao.get()
+        self.assertEqual(historico.alterado_por, self.corretor)
+        self.assertEqual(historico.observacao, "Sinal pago")
+
+        response = self.client.get(reverse("imoveis:imovel_detail", args=[self.imovel.pk]))
+        self.assertContains(response, "Reservado</strong> desde")
+        self.assertContains(response, "Sinal pago")
+        self.assertContains(response, "Mudar situação")
+
+    def test_painel_colega_ve_situacao_mas_sem_formulario(self):
+        self.client.force_login(self.colega)
+        response = self.client.get(reverse("imoveis:imovel_detail", args=[self.imovel.pk]))
+        self.assertContains(response, "Disponível</strong> desde")
+        self.assertNotContains(response, "Mudar situação")
+        self.assertContains(response, "Só o corretor responsável")
+
+    def test_painel_colega_nao_muda_situacao(self):
+        self.client.force_login(self.colega)
+        response = self.client.post(
+            reverse("imoveis:imovel_mudar_situacao", args=[self.imovel.pk]), {"situacao": "VENDIDO"}
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(Imovel.objects.get(pk=self.imovel.pk).situacao, Imovel.Situacao.DISPONIVEL)
+
+    def test_painel_imovel_de_outra_empresa_da_404(self):
+        self.client.force_login(self.corretor)
+        response = self.client.post(
+            reverse("imoveis:imovel_mudar_situacao", args=[self.de_fora.pk]), {"situacao": "VENDIDO"}
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_painel_mesma_situacao_mostra_erro(self):
+        self.client.force_login(self.corretor)
+        response = self.client.post(
+            reverse("imoveis:imovel_mudar_situacao", args=[self.imovel.pk]), {"situacao": "DISPONIVEL"}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "já está disponível")
+
+    def test_corretor_continua_sem_publicar(self):
+        self.client.force_login(self.corretor)
+        response = self.client.get(reverse("imoveis:imovel_detail", args=[self.imovel.pk]))
+        self.assertNotContains(response, "/publicar/")
+        self.assertContains(response, "Publicação e documentos são controlados pelo gestor")
+
+    # ---------------------------------------------------------------- API
+    def test_api_corretor_responsavel_muda_situacao(self):
+        self.client.force_authenticate(self.corretor)
+        response = self.client.post(reverse("imovel-situacao", args=[self.imovel.pk]), {
+            "situacao": "ALUGADO", "observacao": "Locação fechada",
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["situacao"], "ALUGADO")
+
+        historico = self.client.get(reverse("imovel-historico", args=[self.imovel.pk])).data
+        self.assertEqual(len(historico), 1)
+        self.assertEqual(historico[0]["alterado_por"], "Corretor Teste")
+        self.assertEqual(historico[0]["observacao"], "Locação fechada")
+
+    def test_api_colega_recebe_403(self):
+        self.client.force_authenticate(self.colega)
+        response = self.client.post(reverse("imovel-situacao", args=[self.imovel.pk]), {
+            "situacao": "VENDIDO",
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(Imovel.objects.get(pk=self.imovel.pk).situacao, Imovel.Situacao.DISPONIVEL)
+
+    def test_api_imovel_de_outra_empresa_da_404(self):
+        self.client.force_authenticate(self.corretor)
+        response = self.client.post(reverse("imovel-situacao", args=[self.de_fora.pk]), {
+            "situacao": "VENDIDO",
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_api_informa_se_pode_mudar_a_situacao(self):
+        self.client.force_authenticate(self.corretor)
+        dados = self.client.get(reverse("imovel-detail", args=[self.imovel.pk])).data
+        self.assertTrue(dados["pode_mudar_situacao"])
+
+        self.client.force_authenticate(self.colega)
+        dados = self.client.get(reverse("imovel-detail", args=[self.imovel.pk])).data
+        self.assertFalse(dados["pode_mudar_situacao"])
+
+    def test_api_editar_o_imovel_continua_sem_mudar_a_situacao(self):
+        self.client.force_authenticate(self.corretor)
+        self.client.patch(reverse("imovel-detail", args=[self.imovel.pk]), {
+            "situacao": "VENDIDO",
+        }, format="json")
+        self.assertEqual(Imovel.objects.get(pk=self.imovel.pk).situacao, Imovel.Situacao.DISPONIVEL)
+        self.assertFalse(self.imovel.historico_situacao.exists())
+
+    def test_api_corretor_continua_sem_publicar(self):
+        self.client.force_authenticate(self.corretor)
+        response = self.client.post(f"/api/imoveis/{self.imovel.pk}/publicar/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

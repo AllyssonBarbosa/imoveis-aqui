@@ -292,6 +292,8 @@ class ImovelSerializer(serializers.ModelSerializer):
         child=serializers.CharField(), read_only=True
     )
     situacao_desde = serializers.DateTimeField(read_only=True)
+    # o app só mostra o botão de mudar situação quando o Django diz que pode
+    pode_mudar_situacao = serializers.SerializerMethodField()
 
     class Meta:
         model = Imovel
@@ -299,10 +301,11 @@ class ImovelSerializer(serializers.ModelSerializer):
             "id", "codigo", "titulo", "natureza", "corretor_responsavel", "proprietario", "finalidade",
             "preco_venda", "preco_aluguel", "preco_condominio", "preco_iptu", "descricao",
             "caracteristicas", "casa", "terreno", "apartamento", "lote", "endereco", "fotos",
-            "situacao", "situacao_desde", "publicado", "pode_publicar", "pendencias_para_publicar",
-            "criado_em",
+            "situacao", "situacao_desde", "pode_mudar_situacao", "publicado", "pode_publicar",
+            "pendencias_para_publicar", "criado_em",
         ]
-        # situação e publicação são do gestor (W08): aqui só leitura
+        # situação e publicação não mudam editando o imóvel: situação tem a ação
+        # própria (gestor ou corretor responsável) e publicação é do gestor
         read_only_fields = [
             "id", "publicado", "situacao", "endereco", "fotos", "pode_publicar", "criado_em",
         ]
@@ -323,6 +326,10 @@ class ImovelSerializer(serializers.ModelSerializer):
 
     def get_lote(self, imovel):
         return self._detalhes_se_for(imovel, Imovel.Natureza.LOTE)
+
+    def get_pode_mudar_situacao(self, imovel):
+        request = self.context.get("request")
+        return bool(request and imovel.pode_mudar_situacao(request.user))
 
     def validate_natureza(self, valor):
         if self.instance and valor != self.instance.natureza:

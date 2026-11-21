@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block titulo %}Parcela {{ parcela.numero }} do contrato #{{ contrato.pk }} — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+{% if messages %}
+    <ul class="mensagens">
+        {% for mensagem in messages %}<li>{{ mensagem }}</li>{% endfor %}
+    </ul>
+{% endif %}
+
+<div class="cabecalho-imovel">
+    <span class="codigo">Contrato #{{ contrato.pk }}</span>
+    <h1>Parcela {{ parcela.numero }} de {{ contrato.numero_parcelas }}</h1>
+    <span class="situacao parcela-{{ parcela.situacao|lower }}">{{ parcela.situacao_rotulo }}{% if parcela.dias_em_atraso %} há {{ parcela.dias_em_atraso }} dia{{ parcela.dias_em_atraso|pluralize }}{% endif %}</span>
+</div>
+<p><a href="{% url 'contratos:contrato_detail' contrato.pk %}">voltar para o contrato</a></p>
+
+<div class="secao">
+    <p>
+        <strong>Vencimento:</strong> {{ parcela.vencimento|date:"d/m/Y" }} ·
+        <strong>valor:</strong> R$ {{ parcela.valor|floatformat:"2g" }}<br>
+        <strong>Pago até agora:</strong> R$ {{ parcela.total_pago|floatformat:"2g" }} ·
+        <strong>saldo:</strong> R$ {{ parcela.saldo|floatformat:"2g" }}
+    </p>
+</div>
+
+<div class="secao">
+    <h2>Baixas</h2>
+    <p class="texto-suave">Os comprovantes têm dados pessoais: só baixa quem está logado e é desta empresa.</p>
+    <table>
+        <thead>
+            <tr><th>Data</th><th>Valor pago</th><th>Forma</th><th>Observação</th><th>Registrada</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for baixa in baixas %}
+            <tr>
+                <td>{{ baixa.data_pagamento|date:"d/m/Y" }}</td>
+                <td>R$ {{ baixa.valor_pago|floatformat:"2g" }}</td>
+                <td>{{ baixa.get_forma_display }}</td>
+                <td>{{ baixa.observacao|default:"—" }}</td>
+                <td>{{ baixa.registrada_em|date:"d/m/Y H:i" }} por {{ baixa.registrada_por.nome }}</td>
+                <td><a href="{% url 'contratos:comprovante_baixar' contrato.pk parcela.pk baixa.pk %}">Comprovante</a></td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="6">Nenhuma baixa registrada.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% if pode_dar_baixa %}
+<div class="secao">
+    <h2>Registrar baixa</h2>
+    <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        {{ form.non_field_errors }}
+        {{ form.as_p }}
+        <button type="submit">Registrar baixa</button>
+    </form>
+</div>
+{% elif eh_gestor and not contrato.assinado %}
+<p class="texto-suave">O contrato ainda é rascunho: a baixa só fica disponível depois da assinatura.</p>
+{% endif %}
+{% endblock %}

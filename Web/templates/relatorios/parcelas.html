@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block titulo %}Relatório de parcelas — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+<div class="cabecalho-pagina">
+    <h1>Parcelas em atraso e a vencer</h1>
+</div>
+<p><a href="{% url 'relatorios:index' %}">voltar para os relatórios</a></p>
+
+{% if erros %}
+    <ul class="mensagens">
+        {% for campo, mensagem in erros.items %}<li>{{ mensagem }}</li>{% endfor %}
+    </ul>
+{% endif %}
+
+<form method="get" class="filtros-contatos">
+    <label>A vencer nos próximos
+        <input type="number" name="dias" min="1" max="{{ dias_maximo }}" value="{{ relatorio.dias|default:30 }}"> dias
+    </label>
+    <button type="submit">Atualizar</button>
+</form>
+
+{% if relatorio %}
+<div class="secao">
+    <h2 class="alerta-atraso">Em atraso ({{ relatorio.em_atraso|length }})</h2>
+    <p class="texto-suave">Venceram antes de hoje ({{ relatorio.hoje|date:"d/m/Y" }}) e não foram pagas por inteiro. Saldo vencido: R$ {{ relatorio.saldo_em_atraso|floatformat:"2g" }}.</p>
+    {% include "relatorios/_tabela_parcelas.html" with parcelas=relatorio.em_atraso mostrar_atraso=True %}
+</div>
+
+<div class="secao">
+    <h2>A vencer até {{ relatorio.limite|date:"d/m/Y" }} ({{ relatorio.a_vencer|length }})</h2>
+    <p class="texto-suave">Saldo a receber no período: R$ {{ relatorio.saldo_a_vencer|floatformat:"2g" }}.</p>
+    {% include "relatorios/_tabela_parcelas.html" with parcelas=relatorio.a_vencer mostrar_atraso=False %}
+</div>
+{% endif %}
+{% endblock %}

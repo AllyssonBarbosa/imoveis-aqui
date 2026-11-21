@@ -1,0 +1,25 @@
+<table>
+    <thead>
+        <tr>
+            <th>Vencimento</th><th>Contrato</th><th>Parcela</th><th>Cliente</th><th>Imóvel</th><th>Corretor</th>
+            <th>Valor</th><th>Saldo</th>{% if mostrar_atraso %}<th>Atraso</th>{% endif %}
+        </tr>
+    </thead>
+    <tbody>
+        {% for parcela in parcelas %}
+        <tr>
+            <td>{{ parcela.vencimento|date:"d/m/Y" }}</td>
+            <td><a href="{% url 'contratos:contrato_detail' parcela.contrato_id %}">#{{ parcela.contrato_id }}</a></td>
+            <td><a href="{% url 'contratos:parcela_detail' parcela.contrato_id parcela.pk %}">{{ parcela.numero }}</a></td>
+            <td>{{ parcela.contrato.cliente.nome_razao_social }}</td>
+            <td>{{ parcela.contrato.imovel.codigo }}</td>
+            <td>{{ parcela.contrato.corretor.nome }}</td>
+            <td>R$ {{ parcela.valor|floatformat:"2g" }}</td>
+            <td>R$ {{ parcela.saldo|floatformat:"2g" }}</td>
+            {% if mostrar_atraso %}<td class="parcela-atrasada">{{ parcela.dias_em_atraso }} dia{{ parcela.dias_em_atraso|pluralize }}</td>{% endif %}
+        </tr>
+        {% empty %}
+        <tr><td colspan="{% if mostrar_atraso %}9{% else %}8{% endif %}">Nenhuma parcela.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>

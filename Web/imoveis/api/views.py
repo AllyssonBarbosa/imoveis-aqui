@@ -69,6 +69,32 @@ class ImovelViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
     permission_classes = [EhCorretor]
     queryset = IMOVEL_COM_DETALHES
 
+    @action(detail=True, methods=["post"], serializer_class=MudancaSituacaoSerializer)
+    def situacao(self, request, pk=None):
+        """Corretor responsável muda a situação (com histórico). Outro corretor: 403."""
+        imovel = self.get_object()
+        if not imovel.pode_mudar_situacao(request.user):
+            return Response(
+                {"detail": "Só o corretor responsável por este imóvel ou o gestor podem mudar a situação."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        entrada = MudancaSituacaoSerializer(data=request.data)
+        entrada.is_valid(raise_exception=True)
+        try:
+            imovel.mudar_situacao(
+                entrada.validated_data["situacao"], request.user,
+                entrada.validated_data["observacao"],
+            )
+        except DjangoValidationError as erro:
+            return Response({"situacao": erro.messages}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(ImovelSerializer(imovel, context=self.get_serializer_context()).data)
+
+    @action(detail=True, methods=["get"])
+    def historico(self, request, pk=None):
+        imovel = self.get_object()
+        mudancas = imovel.historico_situacao.select_related("alterado_por")
+        return Response(HistoricoSituacaoSerializer(mudancas, many=True).data)
+
     @action(detail=True, methods=["get", "put"])
     def endereco(self, request, pk=None):
         imovel = self.get_object()

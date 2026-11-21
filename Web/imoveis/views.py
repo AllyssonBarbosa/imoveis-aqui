@@ -129,7 +129,45 @@ class ImovelDetailView(CorretorRequiredMixin, DetailView):
         contexto = super().get_context_data(**kwargs)
         contexto["endereco_form"] = EnderecoForm(instance=self.object.endereco)
         contexto["detalhes_form"] = form_de_detalhes(self.object)
+        contexto.update(_contexto_situacao(self.object, self.request.user))
         return contexto
+
+
+def _contexto_situacao(imovel, usuario, situacao_form=None):
+    """Seção Situação do detalhe do corretor: formulário só pra quem pode mudar."""
+    pode = imovel.pode_mudar_situacao(usuario)
+    return {
+        "pode_mudar_situacao": pode,
+        "situacao_form": (situacao_form or SituacaoForm()) if pode else None,
+        "historico": imovel.historico_situacao.select_related("alterado_por"),
+    }
+
+
+@corretor_required
+@require_POST
+def imovel_mudar_situacao(request, pk):
+    """Corretor responsável muda a situação do imóvel (com histórico, como o gestor)."""
+    imovel = get_object_or_404(Imovel, pk=pk, empresa=request.user.empresa)
+    if not imovel.pode_mudar_situacao(request.user):
+        raise PermissionDenied
+    form = SituacaoForm(request.POST)
+    if form.is_valid():
+        try:
+            imovel.mudar_situacao(
+                form.cleaned_data["situacao"], request.user, form.cleaned_data["observacao"]
+            )
+        except ValidationError as erro:
+            form.add_error("situacao", erro.messages[0])
+        else:
+            messages.success(request, f"Situação alterada para {imovel.get_situacao_display().lower()}.")
+            return redirect("imoveis:imovel_detail", pk=pk)
+    messages.error(request, "Não deu pra mudar a situação: confira o formulário.")
+    return render(request, "imoveis/imovel_detail.html", {
+        "imovel": imovel,
+        "endereco_form": EnderecoForm(instance=imovel.endereco),
+        "detalhes_form": form_de_detalhes(imovel),
+        **_contexto_situacao(imovel, request.user, situacao_form=form),
+    })
 
 
 @corretor_required
@@ -152,6 +190,7 @@ def imovel_atualizar_detalhes(request, pk):
         "imovel": imovel,
         "endereco_form": EnderecoForm(instance=imovel.endereco),
         "detalhes_form": form,
+        **_contexto_situacao(imovel, request.user),
     })
 
 

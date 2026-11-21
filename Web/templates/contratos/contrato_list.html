@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block titulo %}Contratos — Imóveis Aqui{% endblock %}
+
+{% block conteudo %}
+<div class="cabecalho-pagina">
+    <h1>{% if user.perfil == "GESTOR" %}Contratos{% else %}Meus contratos{% endif %}</h1>
+    {% if user.perfil == "GESTOR" %}
+        <a class="botao" href="{% url 'contratos:contrato_create' %}">+ Novo contrato</a>
+    {% endif %}
+</div>
+
+{% if messages %}
+    <ul class="mensagens">
+        {% for mensagem in messages %}<li>{{ mensagem }}</li>{% endfor %}
+    </ul>
+{% endif %}
+
+<form method="get" class="filtros">
+    {% for campo in filtro %}
+        <label>{{ campo.label }} {{ campo }}</label>
+    {% endfor %}
+    <div class="filtros-acoes">
+        <button type="submit">Filtrar</button>
+        <a class="botao secundario" href="{% url 'contratos:contrato_list' %}">Limpar</a>
+    </div>
+</form>
+
+<table>
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Tipo</th>
+            <th>Imóvel</th>
+            <th>Cliente</th>
+            <th>Corretor</th>
+            <th>Valor</th>
+            <th>Parcelas</th>
+            <th>Situação</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for contrato in contratos %}
+        <tr>
+            <td><a href="{% url 'contratos:contrato_detail' contrato.pk %}">{{ contrato.pk }}</a></td>
+            <td>{{ contrato.get_tipo_display }}</td>
+            <td>{{ contrato.imovel.codigo }} — {{ contrato.imovel.titulo }}</td>
+            <td>{{ contrato.cliente.nome_razao_social }}</td>
+            <td>{{ contrato.corretor.nome }}</td>
+            <td>R$ {{ contrato.valor|floatformat:"2g" }}{% if contrato.tipo == "LOCACAO" %}/mês{% endif %}</td>
+            <td>{{ contrato.numero_parcelas }}</td>
+            <td><span class="situacao{% if contrato.assinado %} ativo{% endif %}">{{ contrato.get_situacao_display }}</span></td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8">Nenhum contrato encontrado.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if is_paginated %}
+<p>
+    {% if page_obj.has_previous %}<a href="?{{ request.GET.urlencode }}&page={{ page_obj.previous_page_number }}">← Anterior</a>{% endif %}
+    Página {{ page_obj.number }} de {{ page_obj.paginator.num_pages }}
+    {% if page_obj.has_next %}<a href="?{{ request.GET.urlencode }}&page={{ page_obj.next_page_number }}">Próxima →</a>{% endif %}
+</p>
+{% endif %}
+{% endblock %}
