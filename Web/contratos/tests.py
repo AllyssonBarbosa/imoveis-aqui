@@ -897,6 +897,18 @@ class TravaDaSituacaoManualTests(CenarioContrato, APITestCase):
         self.casa.refresh_from_db()
         self.assertEqual(self.casa.situacao, Imovel.Situacao.VENDIDO)
 
+    def test_api_do_corretor_recusa_com_contrato_assinado(self):
+        assinar_contrato(self.contrato, self.gestor, ONTEM)
+        self.client.force_authenticate(self.corretor)
+        response = self.client.post(
+            reverse("imovel-situacao", args=[self.casa.pk]), {"situacao": "DISPONIVEL"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(set(response.data), {"situacao"})
+        self.assertIn("não pode ser mudada à mão", str(response.data))
+        self.casa.refresh_from_db()
+        self.assertEqual(self.casa.situacao, Imovel.Situacao.VENDIDO)
+
     def test_api_da_w08_recusa(self):
         assinar_contrato(self.contrato, self.gestor, ONTEM)
         self.client.force_authenticate(self.gestor)

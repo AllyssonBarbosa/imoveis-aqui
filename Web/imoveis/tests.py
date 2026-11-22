@@ -3487,6 +3487,158 @@ class CorretorMudaSituacaoTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
+class AppSituacaoApiTests(APITestCase):
+    """Rotas do corretor que o app usa na APP09 (D-07, D-08, D-11, D-19).
+
+    Testes de caracterização: o servidor já se comporta assim; aqui o comportamento
+    fica travado (lacunas L1, L3 a L7 da pesquisa).
+    """
+
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.colega = criar_corretor(self.empresa, email="colega@teste.com")
+        self.gestor = criar_gestor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        self.imovel = criar_imovel(self.empresa, self.corretor, self.proprietario)
+
+        outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        self.corretor_de_fora = criar_corretor(outra_empresa, email="fora@teste.com")
+        self.de_fora = criar_imovel(
+            outra_empresa, self.corretor_de_fora,
+            criar_proprietario(outra_empresa, documento="10902516612"), codigo="FORA",
+        )
+
+    def _situacao_no_banco(self):
+        return Imovel.objects.get(pk=self.imovel.pk).situacao
+
+    # ---------------------------------------------------------------- acesso (L4, L5, L7)
+    def test_sem_token_da_401_nas_tres_rotas(self):
+        respostas = [
+            self.client.post(
+                reverse("imovel-situacao", args=[self.imovel.pk]), {"situacao": "RESERVADO"}, format="json"
+            ),
+            self.client.get(reverse("imovel-historico", args=[self.imovel.pk])),
+            self.client.get(reverse("imovel-detail", args=[self.imovel.pk])),
+        ]
+        for response in respostas:
+            self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+            self.assertEqual(response["WWW-Authenticate"], "Token")
+        self.assertEqual(self._situacao_no_banco(), Imovel.Situacao.DISPONIVEL)
+        self.assertFalse(self.imovel.historico_situacao.exists())
+
+    def test_historico_e_detalhe_de_outra_empresa_dao_404(self):
+        # Antes, uma mudança real de cada lado: o 404 não pode ser por falta de histórico.
+        self.imovel.mudar_situacao(Imovel.Situacao.RESERVADO, self.corretor, "Sinal pago")
+        self.de_fora.mudar_situacao(Imovel.Situacao.VENDIDO, self.corretor_de_fora, "Vendido fora")
+
+        # Corretor da outra empresa tentando ler o imóvel da empresa A (IDOR, T-09-02).
+        self.client.force_authenticate(self.corretor_de_fora)
+        historico = self.client.get(reverse("imovel-historico", args=[self.imovel.pk]))
+        detalhe = self.client.get(reverse("imovel-detail", args=[self.imovel.pk]))
+        self.assertEqual(historico.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(detalhe.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertNotIn("Sinal pago", str(historico.content))
+        self.assertNotIn("Sinal pago", str(detalhe.content))
+
+        # E o sentido contrário: corretor da empresa A no imóvel da outra.
+        self.client.force_authenticate(self.corretor)
+        historico = self.client.get(reverse("imovel-historico", args=[self.de_fora.pk]))
+        detalhe = self.client.get(reverse("imovel-detail", args=[self.de_fora.pk]))
+        self.assertEqual(historico.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(detalhe.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertNotIn("Vendido fora", str(historico.content))
+        self.assertNotIn("Vendido fora", str(detalhe.content))
+
+    def test_colega_com_corpo_invalido_recebe_403_e_nao_400(self):
+        self.client.force_authenticate(self.colega)
+        for corpo in ({"situacao": "DEMOLIDO"}, {}, {"situacao": "RESERVADO", "observacao": None}):
+            response = self.client.post(
+                reverse("imovel-situacao", args=[self.imovel.pk]), corpo, format="json"
+            )
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN, corpo)
+            self.assertEqual(
+                response.data["detail"],
+                "Só o corretor responsável por este imóvel ou o gestor podem mudar a situação.",
+            )
+        self.assertEqual(self._situacao_no_banco(), Imovel.Situacao.DISPONIVEL)
+        self.assertFalse(self.imovel.historico_situacao.exists())
+
+    def test_gestor_na_rota_do_corretor_recebe_403(self):
+        self.client.force_authenticate(self.gestor)
+        response = self.client.post(
+            reverse("imovel-situacao", args=[self.imovel.pk]), {"situacao": "RESERVADO"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertIn("restrito ao corretor", response.data["detail"])
+        self.assertEqual(self._situacao_no_banco(), Imovel.Situacao.DISPONIVEL)
+
+    def test_colega_le_o_historico(self):
+        self.imovel.mudar_situacao(Imovel.Situacao.RESERVADO, self.corretor, "Sinal pago")
+        self.client.force_authenticate(self.colega)
+        response = self.client.get(reverse("imovel-historico", args=[self.imovel.pk]))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["situacao_nova"], "RESERVADO")
+
+    # ---------------------------------------------------------------- validação (L1, L3)
+    def test_mesma_situacao_da_400_com_a_mensagem(self):
+        self.client.force_authenticate(self.corretor)
+        response = self.client.post(
+            reverse("imovel-situacao", args=[self.imovel.pk]), {"situacao": "DISPONIVEL"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data, {"situacao": ["O imóvel já está disponível."]})
+        self.assertFalse(self.imovel.historico_situacao.exists())
+
+    def test_situacao_invalida_ou_ausente_da_400_na_chave_situacao(self):
+        self.client.force_authenticate(self.corretor)
+        for corpo in ({"situacao": "DEMOLIDO"}, {"situacao": "reservado"}, {}):
+            response = self.client.post(
+                reverse("imovel-situacao", args=[self.imovel.pk]), corpo, format="json"
+            )
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, corpo)
+            self.assertEqual(set(response.data), {"situacao"}, corpo)
+            self.assertEqual(self._situacao_no_banco(), Imovel.Situacao.DISPONIVEL)
+        self.assertFalse(self.imovel.historico_situacao.exists())
+
+    def test_observacao_nula_da_400_na_chave_observacao(self):
+        self.client.force_authenticate(self.corretor)
+        response = self.client.post(
+            reverse("imovel-situacao", args=[self.imovel.pk]),
+            {"situacao": "RESERVADO", "observacao": None}, format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(set(response.data), {"observacao"})
+        self.assertEqual(self._situacao_no_banco(), Imovel.Situacao.DISPONIVEL)
+        self.assertFalse(self.imovel.historico_situacao.exists())
+
+    # ---------------------------------------------------------------- histórico (L6, D-11)
+    def test_historico_mais_recente_primeiro_com_o_nome(self):
+        self.client.force_authenticate(self.corretor)
+        url = reverse("imovel-situacao", args=[self.imovel.pk])
+        self.assertEqual(self.client.post(url, {"situacao": "RESERVADO"}, format="json").status_code, 200)
+        self.assertEqual(
+            self.client.post(url, {"situacao": "VENDIDO", "observacao": "Negócio fechado"}, format="json").status_code,
+            200,
+        )
+
+        response = self.client.get(reverse("imovel-historico", args=[self.imovel.pk]))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+        mais_recente, mais_antigo = response.data
+        self.assertEqual(mais_recente["situacao_nova"], "VENDIDO")
+        self.assertEqual(mais_recente["situacao_anterior"], "RESERVADO")
+        self.assertEqual(mais_recente["observacao"], "Negócio fechado")
+        self.assertEqual(mais_antigo["situacao_nova"], "RESERVADO")
+        for item in response.data:
+            self.assertEqual(item["alterado_por"], self.corretor.nome)
+            self.assertEqual(
+                set(item),
+                {"id", "situacao_anterior", "situacao_nova", "alterado_por", "alterado_em", "observacao"},
+            )
+
+
 class AcervoApiTests(MediaTemporariaMixin, APITestCase):
     """Acervo do corretor (APP08): GET /api/imoveis/ paginado, filtrado e enxuto (D-06, D-07, D-10, D-13)."""
 
