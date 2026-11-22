@@ -153,6 +153,21 @@ if not re.fullmatch(r'[0-9]+/[smhd][a-z]*', VITRINE_TAXA_ANONIMA):
         "por exemplo 120/min."
     )
 
+# Taxas do login da API (POST /api/auth/login/), em dois baldes: por e-mail (freia força bruta contra uma
+# conta) e por IP (freia quem testa vários e-mails). Mesma validação da vitrine, pelo mesmo motivo.
+LOGIN_TAXA_POR_EMAIL = env('LOGIN_TAXA_POR_EMAIL', default='10/hour')
+if not re.fullmatch(r'[0-9]+/[smhd][a-z]*', LOGIN_TAXA_POR_EMAIL):
+    raise ImproperlyConfigured(
+        f"LOGIN_TAXA_POR_EMAIL inválida: {LOGIN_TAXA_POR_EMAIL!r}. Use <número>/<período>, "
+        "por exemplo 10/hour."
+    )
+LOGIN_TAXA_POR_IP = env('LOGIN_TAXA_POR_IP', default='30/hour')
+if not re.fullmatch(r'[0-9]+/[smhd][a-z]*', LOGIN_TAXA_POR_IP):
+    raise ImproperlyConfigured(
+        f"LOGIN_TAXA_POR_IP inválida: {LOGIN_TAXA_POR_IP!r}. Use <número>/<período>, "
+        "por exemplo 30/hour."
+    )
+
 # Quantos proxies confiáveis existem na frente da API (0 = nenhum, usa o IP da conexão).
 NUM_PROXIES = env.int('NUM_PROXIES', default=0)
 # Se a variável foi informada de propósito. Fora do DEBUG, o padrão 0 atrás de proxy reverso junta todos
@@ -172,6 +187,10 @@ REST_FRAMEWORK = {
     # Não há DEFAULT_THROTTLE_CLASSES: a API autenticada não é limitada.
     'DEFAULT_THROTTLE_RATES': {
         'vitrine_publica': VITRINE_TAXA_ANONIMA,
+        # Só o login da API é limitado assim (ThrottleLoginPorEmail/ThrottleLoginPorIp).
+        # O DRF só aceita os períodos s/m/h/d.
+        'login_email': LOGIN_TAXA_POR_EMAIL,
+        'login_ip': LOGIN_TAXA_POR_IP,
     },
     # 0 = usa o IP da conexão e ignora o X-Forwarded-For, que o cliente forja.
     # Atrás de proxy reverso, informe quantos proxies confiáveis existem.

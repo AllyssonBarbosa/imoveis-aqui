@@ -21,7 +21,7 @@ from rest_framework.test import APITestCase
 
 from contas.models import Usuario
 from core.models import Endereco
-from core.throttles import ThrottleVitrinePublica
+from core.throttles import ThrottleLoginPorEmail, ThrottleLoginPorIp, ThrottleVitrinePublica
 from empresas.models import Empresa
 from localizacao.api.views import CidadeAtendidaAPIView
 from localizacao.models import Cidade
@@ -364,7 +364,7 @@ class ImovelApiTests(APITestCase):
         criar_imovel(self.empresa, self.corretor, self.proprietario, codigo="IM001")
         self.client.force_authenticate(self.corretor)
         response = self.client.get(reverse("imovel-list"))
-        codigos = [item["codigo"] for item in response.data]
+        codigos = [item["codigo"] for item in response.data["results"]]
         self.assertEqual(codigos, ["IM001"])
 
     def test_trocar_id_na_url_nao_abre_imovel_de_outra_empresa(self):
@@ -3485,3 +3485,297 @@ class CorretorMudaSituacaoTests(APITestCase):
         self.client.force_authenticate(self.corretor)
         response = self.client.post(f"/api/imoveis/{self.imovel.pk}/publicar/")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class AcervoApiTests(MediaTemporariaMixin, APITestCase):
+    """Acervo do corretor (APP08): GET /api/imoveis/ paginado, filtrado e enxuto (D-06, D-07, D-10, D-13)."""
+
+    CHAVES_ENVELOPE = {"count", "next", "previous", "results"}
+    CHAVES_ITEM = {
+        "id", "codigo", "titulo", "finalidade", "preco_venda", "preco_aluguel", "foto_capa",
+        "situacao", "meu_imovel", "na_vitrine",
+    }
+
+    def setUp(self):
+        # O teste ponta a ponta faz POST em api-login: sem isto ele dependeria da taxa do ambiente e do
+        # cache deixado por outro teste (Pitfall 9).
+        cache.clear()
+        self.addCleanup(cache.clear)
+        for classe in (ThrottleLoginPorEmail, ThrottleLoginPorIp):
+            patcher = mock.patch.object(classe, "rate", TAXA_ALTA_NOS_TESTES, create=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.colega = criar_corretor(self.empresa, email="colega@teste.com")
+        self.proprietario = criar_proprietario(self.empresa)
+
+        self.outra_empresa = criar_empresa(nome="Outra", cnpj="19.771.776/0001-33")
+        self.outro_corretor = criar_corretor(self.outra_empresa, email="outro@teste.com")
+        self.outro_proprietario = criar_proprietario(self.outra_empresa, documento="10902516612")
+        self.imovel_de_fora = criar_imovel(
+            self.outra_empresa, self.outro_corretor, self.outro_proprietario, codigo="FORA"
+        )
+
+    def _criar(self, codigo, corretor=None, **extra):
+        return criar_imovel(self.empresa, corretor or self.corretor, self.proprietario, codigo=codigo, **extra)
+
+    def _lista(self, **parametros):
+        self.client.force_authenticate(self.corretor)
+        return self.client.get(reverse("imovel-list"), parametros)
+
+    def _item(self, imovel):
+        itens = {item["id"]: item for item in self._lista().data["results"]}
+        return itens[imovel.pk]
+
+    def test_ponta_a_ponta_com_token_real_devolve_o_envelope_paginado(self):
+        self._criar("IM001")
+        login = self.client.post(
+            reverse("api-login"), {"email": "corretor@teste.com", "password": "senha-forte-123"}
+        )
+        self.assertEqual(login.status_code, status.HTTP_200_OK)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {login.data['token']}")
+
+        response = self.client.get(reverse("imovel-list"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(response.data), self.CHAVES_ENVELOPE)
+        self.assertEqual([item["codigo"] for item in response.data["results"]], ["IM001"])
+
+    def test_pagina_de_20_com_next_absoluto(self):
+        for numero in range(1, 26):
+            self._criar(f"AC{numero:02d}")
+
+        primeira = self._lista()
+        self.assertEqual(primeira.data["count"], 25)
+        self.assertEqual(len(primeira.data["results"]), 20)
+        self.assertTrue(primeira.data["next"].startswith("http://testserver/"), primeira.data["next"])
+        self.assertIn("page=2", primeira.data["next"])
+        self.assertIsNone(primeira.data["previous"])
+
+        segunda = self._lista(page=2)
+        self.assertEqual(len(segunda.data["results"]), 5)
+        self.assertIsNone(segunda.data["next"])
+
+    def test_tamanho_da_pagina_nao_e_ajustavel_pelo_cliente(self):
+        for numero in range(1, 26):
+            self._criar(f"AC{numero:02d}")
+        response = self._lista(page_size=3)
+        self.assertEqual(len(response.data["results"]), 20)
+
+    def test_item_tem_exatamente_as_10_chaves(self):
+        self._criar("IM001")
+        itens = self._lista().data["results"]
+        self.assertEqual(len(itens), 1)
+        self.assertEqual(set(itens[0]), self.CHAVES_ITEM)
+
+    def test_meu_imovel_so_para_o_corretor_responsavel_e_os_dois_aparecem(self):
+        meu = self._criar("MEU")
+        do_colega = self._criar("COLEGA", corretor=self.colega)
+
+        itens = {item["codigo"]: item for item in self._lista().data["results"]}
+
+        self.assertEqual(set(itens), {"MEU", "COLEGA"})
+        self.assertIs(itens["MEU"]["meu_imovel"], True)
+        self.assertIs(itens["COLEGA"]["meu_imovel"], False)
+        self.assertEqual(itens["MEU"]["id"], meu.pk)
+        self.assertEqual(itens["COLEGA"]["id"], do_colega.pk)
+
+    def test_na_vitrine_segue_a_regra_unica_publicado_disponivel_empresa_ativa(self):
+        no_ar = self._criar("NOAR", publicado=True)
+        rascunho = self._criar("RASC")
+        reservado = self._criar("RESERV", publicado=True)
+        Imovel.objects.filter(pk=reservado.pk).update(situacao=Imovel.Situacao.RESERVADO)
+
+        self.assertIs(self._item(no_ar)["na_vitrine"], True)
+        self.assertIs(self._item(rascunho)["na_vitrine"], False)
+        self.assertIs(self._item(reservado)["na_vitrine"], False)
+
+    def test_na_vitrine_falso_quando_a_empresa_esta_inativa(self):
+        no_ar = self._criar("NOAR", publicado=True)
+        Empresa.objects.filter(pk=self.empresa.pk).update(ativa=False)
+        self.assertIs(self._item(no_ar)["na_vitrine"], False)
+
+    def test_foto_capa_e_url_absoluta_da_capa_marcada_senao_a_primeira_senao_nula(self):
+        sem_fotos = self._criar("SEMFOTO")
+        so_primeira = self._criar("PRIMEIRA")
+        primeira = FotoImovel.objects.create(imovel=so_primeira, imagem=gerar_imagem(), ordem=0)
+        com_capa = self._criar("COMCAPA")
+        FotoImovel.objects.create(imovel=com_capa, imagem=gerar_imagem(), ordem=0)
+        capa = FotoImovel.objects.create(imovel=com_capa, imagem=gerar_imagem(), ordem=1)
+        capa.definir_como_capa()
+
+        self.assertIsNone(self._item(sem_fotos)["foto_capa"])
+        self.assertEqual(
+            self._item(so_primeira)["foto_capa"], f"http://testserver{primeira.imagem.url}"
+        )
+        self.assertEqual(self._item(com_capa)["foto_capa"], f"http://testserver{capa.imagem.url}")
+
+    def test_ordem_e_do_mais_novo_para_o_mais_antigo(self):
+        for codigo in ("A", "B", "C"):
+            self._criar(codigo)
+        codigos = [item["codigo"] for item in self._lista().data["results"]]
+        self.assertEqual(codigos, ["C", "B", "A"])
+
+    def test_detalhe_continua_completo_e_sem_envelope(self):
+        imovel = self._criar("IM001")
+        self.client.force_authenticate(self.corretor)
+        response = self.client.get(reverse("imovel-detail", args=[imovel.pk]))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("proprietario", response.data)
+        self.assertNotIn("results", response.data)
+        self.assertEqual(response.data["codigo"], "IM001")
+
+    # ---- busca e situação pelo FiltroImovelForm do painel do site (D-08, D-09, D-11) ----
+
+    def _codigos(self, **parametros):
+        response = self._lista(**parametros)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return {item["codigo"] for item in response.data["results"]}
+
+    def test_busca_por_codigo(self):
+        for codigo in ("AC01", "AC02", "XY99"):
+            self._criar(codigo)
+        self.assertEqual(self._codigos(busca="AC0"), {"AC01", "AC02"})
+
+    def test_busca_por_titulo(self):
+        self._criar("IM001", titulo="Sobrado em Moema")
+        self._criar("IM002", titulo="Casa bonita")
+        self.assertEqual(self._codigos(busca="moema"), {"IM001"})
+
+    def test_filtro_por_situacao(self):
+        self._criar("DISP")
+        reservado = self._criar("RESERV")
+        vendido = self._criar("VEND")
+        Imovel.objects.filter(pk=reservado.pk).update(situacao=Imovel.Situacao.RESERVADO)
+        Imovel.objects.filter(pk=vendido.pk).update(situacao=Imovel.Situacao.VENDIDO)
+
+        self.assertEqual(self._codigos(situacao="RESERVADO"), {"RESERV"})
+        self.assertEqual(self._codigos(situacao="VENDIDO"), {"VEND"})
+        self.assertEqual(self._codigos(situacao="DISPONIVEL"), {"DISP"})
+        self.assertEqual(self._codigos(situacao="ALUGADO"), set())
+
+    def test_busca_e_situacao_combinadas(self):
+        self._criar("AC01")
+        reservado = self._criar("AC02")
+        outro_reservado = self._criar("ZZ03")
+        Imovel.objects.filter(pk__in=[reservado.pk, outro_reservado.pk]).update(
+            situacao=Imovel.Situacao.RESERVADO
+        )
+        self.assertEqual(self._codigos(busca="AC", situacao="RESERVADO"), {"AC02"})
+
+    def test_situacao_invalida_nao_vira_erro_e_devolve_a_lista_sem_filtro(self):
+        for codigo in ("AC01", "AC02", "XY99"):
+            self._criar(codigo)
+        # formulário inválido inteiro é ignorado (comportamento do site): nem a busca vale
+        self.assertEqual(self._codigos(busca="AC01", situacao="XXX"), {"AC01", "AC02", "XY99"})
+
+    def test_page_sozinho_nao_filtra_nada(self):
+        for numero in range(1, 26):
+            self._criar(f"AC{numero:02d}")
+        response = self._lista(page=1)
+        self.assertEqual(response.data["count"], 25)
+
+    def test_busca_pagina_so_o_que_casou(self):
+        for numero in range(1, 26):
+            self._criar(f"AC{numero:02d}")
+        self._criar("OUTRO")
+        response = self._lista(busca="AC", page=2)
+        self.assertEqual(response.data["count"], 25)
+        self.assertEqual(len(response.data["results"]), 5)
+
+    # ---- isolamento por empresa e perfis (D-14, AC-5) ----
+
+    def test_isolamento_busca_situacao_e_parametros_forcados_nao_trazem_imovel_de_fora(self):
+        self._criar("IM001")
+        tentativas = (
+            {"busca": "FORA"},
+            {"situacao": "DISPONIVEL"},
+            {"empresa": self.outra_empresa.pk},
+            {"corretor": self.outro_corretor.pk},
+            {"busca": "FORA", "situacao": "DISPONIVEL", "empresa": self.outra_empresa.pk},
+        )
+        for parametros in tentativas:
+            with self.subTest(parametros=parametros):
+                codigos = self._codigos(**parametros)
+                self.assertNotIn("FORA", codigos)
+        # os parâmetros de empresa/corretor são ignorados: o acervo da própria empresa segue inteiro
+        self.assertEqual(self._codigos(empresa=self.outra_empresa.pk), {"IM001"})
+        self.assertEqual(self._codigos(corretor=self.outro_corretor.pk), {"IM001"})
+
+    def test_detalhe_de_imovel_de_outra_empresa_da_404(self):
+        self.client.force_authenticate(self.corretor)
+        response = self.client.get(reverse("imovel-detail", args=[self.imovel_de_fora.pk]))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_gestor_recebe_403_na_lista(self):
+        self.client.force_authenticate(criar_gestor(self.empresa))
+        self.assertEqual(self.client.get(reverse("imovel-list")).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_administrador_recebe_403_na_lista(self):
+        administrador = Usuario.objects.create_user(
+            email="admin@teste.com", senha="senha-forte-123", nome="Admin",
+            perfil=Usuario.Perfil.ADMINISTRADOR,
+        )
+        self.client.force_authenticate(administrador)
+        self.assertEqual(self.client.get(reverse("imovel-list")).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_sem_credencial_recebe_401_na_lista(self):
+        self.assertEqual(self.client.get(reverse("imovel-list")).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    # ---- custo fixo ----
+
+    def test_numero_de_consultas_da_pagina_nao_cresce_com_o_numero_de_imoveis(self):
+        def consultas_da_primeira_pagina():
+            self.client.force_authenticate(self.corretor)
+            with CaptureQueriesContext(connection) as contexto:
+                response = self.client.get(reverse("imovel-list"))
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            return len(contexto.captured_queries)
+
+        for numero in range(1, 4):
+            imovel = self._criar(f"AC{numero:02d}", publicado=True)
+            FotoImovel.objects.create(imovel=imovel, imagem=gerar_imagem(), ordem=0)
+        com_3 = consultas_da_primeira_pagina()
+
+        for numero in range(4, 26):
+            imovel = self._criar(f"AC{numero:02d}", corretor=self.colega, publicado=True)
+            FotoImovel.objects.create(imovel=imovel, imagem=gerar_imagem(), ordem=0)
+        com_25 = consultas_da_primeira_pagina()
+
+        self.assertEqual(com_3, com_25)
+
+
+class AcervoAllowlistExataTests(MediaTemporariaMixin, APITestCase):
+    """D-13/T-08-03: as chaves de cada item do acervo são travadas por igualdade exata + deny-list."""
+
+    CHAVES_ITEM = {
+        "id", "codigo", "titulo", "finalidade", "preco_venda", "preco_aluguel", "foto_capa",
+        "situacao", "meu_imovel", "na_vitrine",
+    }
+    CHAVES_PROIBIDAS = (
+        "proprietario", "corretor_responsavel", "empresa", "descricao", "fotos", "endereco",
+        "publicado", "pode_publicar", "pendencias_para_publicar", "criado_em",
+    )
+
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.corretor = criar_corretor(self.empresa)
+        self.proprietario = criar_proprietario(self.empresa)
+        casa = criar_imovel(self.empresa, self.corretor, self.proprietario, codigo="CASA1", publicado=True)
+        FotoImovel.objects.create(imovel=casa, imagem=gerar_imagem(), ordem=0)
+        criar_imovel(
+            self.empresa, self.corretor, self.proprietario, codigo="TERR1",
+            natureza=Imovel.Natureza.TERRENO, finalidade=Imovel.Finalidade.ALUGUEL,
+            preco_venda=None, preco_aluguel="1500.00", descricao="Texto interno do corretor.",
+        )
+
+    def test_todo_item_da_lista_tem_as_chaves_exatas_e_nenhuma_proibida(self):
+        self.client.force_authenticate(self.corretor)
+        itens = self.client.get(reverse("imovel-list")).json()["results"]
+        self.assertEqual({item["codigo"] for item in itens}, {"CASA1", "TERR1"})
+        for item in itens:
+            with self.subTest(codigo=item["codigo"]):
+                self.assertEqual(set(item), self.CHAVES_ITEM)
+                for chave in self.CHAVES_PROIBIDAS:
+                    self.assertNotIn(chave, item)

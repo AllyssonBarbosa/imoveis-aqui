@@ -1,12 +1,20 @@
+from unittest import mock
+
+from django.conf import settings
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.authtoken.models import Token
-from rest_framework.test import APITestCase
+from rest_framework.parsers import JSONParser
+from rest_framework.request import Request
+from rest_framework.test import APIRequestFactory, APITestCase
 
+from core.throttles import ThrottleLoginPorEmail, ThrottleLoginPorIp
 from empresas.models import Empresa
 
+from .api.views import LoginAPIView
 from .models import Usuario
 
 
@@ -145,10 +153,54 @@ class LoginWebTests(TestCase):
         self.assertRedirects(response, reverse("contas:painel"))
 
 
+# Taxa fixa da suíte: a real vem de LOGIN_TAXA_POR_EMAIL/LOGIN_TAXA_POR_IP no `.env` de quem roda, e um
+# valor baixo ali (é para isso que as variáveis existem) faria testes que fazem login receberem 429.
+TAXA_ALTA_NOS_TESTES = "100000/min"
+
+
+def fixar_taxa_alta_no_login(teste):
+    """Limpa o cache dos limites e pina uma taxa alta nos dois throttles do login durante o teste.
+
+    Os testes de limite sobrescrevem com a taxa explícita deles (`mock.patch.object` aninhado). A leitura
+    do settings segue testável por `get_rate()`, que ignora este patch.
+    """
+    cache.clear()
+    teste.addCleanup(cache.clear)
+    for classe in (ThrottleLoginPorEmail, ThrottleLoginPorIp):
+        patcher = mock.patch.object(classe, "rate", TAXA_ALTA_NOS_TESTES, create=True)
+        patcher.start()
+        teste.addCleanup(patcher.stop)
+
+
 class LoginApiTests(APITestCase):
     def setUp(self):
+        fixar_taxa_alta_no_login(self)
         self.empresa = criar_empresa()
         self.usuario = criar_corretor(self.empresa)
+
+    def test_resposta_do_login_tem_so_a_chave_token(self):
+        response = self.client.post(
+            reverse("api-login"),
+            {"email": "corretor@teste.com", "password": "senha-forte-123"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(response.data), {"token"})
+
+    def test_token_velho_no_cabecalho_nao_derruba_o_login_com_senha_certa(self):
+        response = self.client.post(
+            reverse("api-login"),
+            {"email": "corretor@teste.com", "password": "senha-forte-123"},
+            HTTP_AUTHORIZATION="Token chave-que-nao-existe",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_token_velho_no_cabecalho_com_senha_errada_da_400_e_nunca_401(self):
+        response = self.client.post(
+            reverse("api-login"),
+            {"email": "corretor@teste.com", "password": "errada"},
+            HTTP_AUTHORIZATION="Token chave-que-nao-existe",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_login_retorna_token_valido(self):
         response = self.client.post(
@@ -165,6 +217,201 @@ class LoginApiTests(APITestCase):
             {"email": "corretor@teste.com", "password": "errada"},
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class LoginLimiteDeTentativasTests(APITestCase):
+    """D-A: o login limita as tentativas por e-mail e por IP, sem revelar se o e-mail existe."""
+
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.empresa = criar_empresa()
+        self.usuario = criar_corretor(self.empresa)
+        self.url = reverse("api-login")
+
+    def _tentar(self, email, senha="errada", **extra):
+        return self.client.post(self.url, {"email": email, "password": senha}, format="json", **extra)
+
+    def _com_taxas(self, por_email, por_ip):
+        patcher_email = mock.patch.object(ThrottleLoginPorEmail, "rate", por_email, create=True)
+        patcher_ip = mock.patch.object(ThrottleLoginPorIp, "rate", por_ip, create=True)
+        patcher_email.start()
+        patcher_ip.start()
+        self.addCleanup(patcher_email.stop)
+        self.addCleanup(patcher_ip.stop)
+
+    def _requisicao_drf(self, corpo):
+        requisicao = APIRequestFactory().post(self.url, corpo, format="json")
+        return Request(requisicao, parsers=[JSONParser()])
+
+    def _chave_de_cache_do_email(self, corpo):
+        return ThrottleLoginPorEmail().get_cache_key(self._requisicao_drf(corpo), None)
+
+    def test_terceira_tentativa_com_o_mesmo_email_da_429_com_retry_after(self):
+        self._com_taxas("2/min", "100000/min")
+        self.assertEqual(self._tentar("corretor@teste.com").status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self._tentar("corretor@teste.com").status_code, status.HTTP_400_BAD_REQUEST)
+        resposta = self._tentar("corretor@teste.com")
+        self.assertEqual(resposta.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertIn("Retry-After", resposta)
+        self.assertGreater(int(resposta["Retry-After"]), 0)
+        self.assertIn("detail", resposta.data)
+
+    def test_senha_certa_tambem_conta_e_e_bloqueada_depois_do_limite(self):
+        self._com_taxas("2/min", "100000/min")
+        self._tentar("corretor@teste.com")
+        self._tentar("corretor@teste.com")
+        resposta = self._tentar("corretor@teste.com", senha="senha-forte-123")
+        self.assertEqual(resposta.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_tres_emails_diferentes_do_mesmo_ip_dao_429_na_terceira(self):
+        self._com_taxas("100000/min", "2/min")
+        self.assertEqual(self._tentar("a@teste.com").status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self._tentar("b@teste.com").status_code, status.HTTP_400_BAD_REQUEST)
+        resposta = self._tentar("c@teste.com")
+        self.assertEqual(resposta.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertIn("Retry-After", resposta)
+
+    def test_429_e_igual_para_email_existente_e_inexistente(self):
+        self._com_taxas("1/min", "100000/min")
+        self._tentar("corretor@teste.com")
+        self._tentar("fantasma@teste.com")
+        existente = self._tentar("corretor@teste.com")
+        inexistente = self._tentar("fantasma@teste.com")
+        self.assertEqual(existente.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertEqual(inexistente.status_code, existente.status_code)
+        self.assertEqual(set(inexistente.data), set(existente.data))
+
+    def test_email_com_caixa_e_espaco_cai_no_mesmo_balde(self):
+        self._com_taxas("2/min", "100000/min")
+        self._tentar("Corretor@Teste.com ")
+        self._tentar("corretor@teste.com")
+        resposta = self._tentar("CORRETOR@teste.com")
+        self.assertEqual(resposta.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_chave_de_cache_nao_tem_o_email_em_texto_e_normaliza(self):
+        chave = self._chave_de_cache_do_email({"email": "Corretor@Teste.com "})
+        self.assertIsNotNone(chave)
+        self.assertNotIn("corretor", chave.lower())
+        self.assertNotIn("teste.com", chave.lower())
+        self.assertEqual(chave, self._chave_de_cache_do_email({"email": "corretor@teste.com"}))
+        self.assertNotEqual(chave, self._chave_de_cache_do_email({"email": "outro@teste.com"}))
+
+    def test_sem_email_no_corpo_a_chave_e_none_e_o_serializer_responde_400(self):
+        self.assertIsNone(self._chave_de_cache_do_email({"password": "x"}))
+        self.assertIsNone(self._chave_de_cache_do_email({"email": "   "}))
+        resposta = self.client.post(self.url, {"password": "x"}, format="json")
+        self.assertEqual(resposta.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_corpo_que_nao_e_objeto_nao_derruba_a_chave(self):
+        self.assertIsNone(ThrottleLoginPorEmail().get_cache_key(self._requisicao_drf(["a@teste.com"]), None))
+
+    def test_taxas_vem_do_settings(self):
+        taxas = settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]
+        self.assertEqual(ThrottleLoginPorEmail().get_rate(), taxas["login_email"])
+        self.assertEqual(ThrottleLoginPorIp().get_rate(), taxas["login_ip"])
+        self.assertEqual(settings.LOGIN_TAXA_POR_EMAIL, taxas["login_email"])
+        self.assertEqual(settings.LOGIN_TAXA_POR_IP, taxas["login_ip"])
+
+    def test_view_do_login_usa_os_dois_throttles_e_nenhuma_autenticacao(self):
+        self.assertEqual(LoginAPIView.throttle_classes, [ThrottleLoginPorEmail, ThrottleLoginPorIp])
+        self.assertEqual(LoginAPIView.authentication_classes, [])
+
+
+class EuApiTests(APITestCase):
+    """D-02/D-B: GET /api/auth/eu/ devolve só o papel de quem manda o token."""
+
+    def setUp(self):
+        self.empresa = criar_empresa()
+        self.url = reverse("api-eu")
+
+    def _com_token(self, usuario):
+        token = Token.objects.create(user=usuario)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_cada_perfil_recebe_so_o_proprio_papel(self):
+        administrador = Usuario.objects.create_superuser(
+            email="admin@teste.com", senha="senha-forte-123", nome="Admin"
+        )
+        casos = [
+            (criar_corretor(self.empresa), "CORRETOR"),
+            (criar_gestor(self.empresa), "GESTOR"),
+            (administrador, "ADMINISTRADOR"),
+        ]
+        for usuario, perfil in casos:
+            with self.subTest(perfil=perfil):
+                self._com_token(usuario)
+                resposta = self.client.get(self.url)
+                self.assertEqual(resposta.status_code, status.HTTP_200_OK)
+                self.assertEqual(set(resposta.data), {"perfil"})
+                self.assertEqual(resposta.data, {"perfil": perfil})
+
+    def test_sem_token_da_401_com_www_authenticate(self):
+        resposta = self.client.get(self.url)
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertIn("WWW-Authenticate", resposta)
+
+    def test_so_com_sessao_do_site_da_401(self):
+        self.client.force_login(criar_corretor(self.empresa))
+        resposta = self.client.get(self.url)
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_token_inexistente_da_401(self):
+        self.client.credentials(HTTP_AUTHORIZATION="Token chave-que-nao-existe")
+        resposta = self.client.get(self.url)
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class SairApiTests(APITestCase):
+    """AC-2: POST /api/auth/sair/ revoga o token no servidor (token único por usuário)."""
+
+    def setUp(self):
+        fixar_taxa_alta_no_login(self)
+        self.empresa = criar_empresa()
+        self.usuario = criar_corretor(self.empresa)
+        self.token = Token.objects.create(user=self.usuario)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
+
+    def test_sair_apaga_o_token_e_responde_204(self):
+        resposta = self.client.post(reverse("api-sair"))
+        self.assertEqual(resposta.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Token.objects.filter(user=self.usuario).exists())
+
+    def test_mesma_chave_depois_do_sair_da_401_em_qualquer_rota(self):
+        self.client.post(reverse("api-sair"))
+        self.assertEqual(self.client.get(reverse("api-eu")).status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(self.client.get(reverse("imovel-list")).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_novo_login_depois_do_sair_gera_chave_diferente(self):
+        chave_antiga = self.token.key
+        self.client.post(reverse("api-sair"))
+        self.client.credentials()
+        resposta = self.client.post(
+            reverse("api-login"), {"email": "corretor@teste.com", "password": "senha-forte-123"}
+        )
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK)
+        self.assertNotEqual(resposta.data["token"], chave_antiga)
+
+    def test_repetir_o_sair_com_a_chave_revogada_da_401(self):
+        self.client.post(reverse("api-sair"))
+        resposta = self.client.post(reverse("api-sair"))
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_sair_sem_token_da_401(self):
+        self.client.credentials()
+        resposta = self.client.post(reverse("api-sair"))
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_sair_so_com_sessao_do_site_da_401(self):
+        self.client.credentials()
+        self.client.force_login(self.usuario)
+        resposta = self.client.post(reverse("api-sair"))
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertTrue(Token.objects.filter(user=self.usuario).exists())
+
+    def test_get_no_sair_da_405(self):
+        resposta = self.client.get(reverse("api-sair"))
+        self.assertEqual(resposta.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
 
 class IsolamentoMultitenantTests(APITestCase):

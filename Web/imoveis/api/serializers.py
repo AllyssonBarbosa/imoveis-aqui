@@ -527,7 +527,20 @@ SERIALIZER_PUBLICO_POR_NATUREZA = {
 }
 
 
-class ImovelVitrineSerializer(serializers.ModelSerializer):
+class FotoCapaMixin:
+    """`foto_capa` do cartão: compartilhado pela vitrine pública e pelo acervo do corretor (APP08)."""
+
+    def get_foto_capa(self, imovel):
+        # as fotos já vêm do prefetch, ordenadas por ordem — sem capa marcada, vale a primeira
+        fotos = list(imovel.fotos.all())
+        if not fotos:
+            return None
+        foto = next((f for f in fotos if f.capa), fotos[0])
+        request = self.context.get("request")
+        return request.build_absolute_uri(foto.imagem.url) if request else foto.imagem.url
+
+
+class ImovelVitrineSerializer(FotoCapaMixin, serializers.ModelSerializer):
     """Cartão do imóvel na busca — os números vêm das anotações de imoveis_da_vitrine()."""
 
     bairro = serializers.CharField(source="bairro_anuncio", read_only=True)
@@ -546,14 +559,30 @@ class ImovelVitrineSerializer(serializers.ModelSerializer):
             "preco_condominio", "bairro", "area", "quartos", "suites", "vagas", "foto_capa",
         ]
 
-    def get_foto_capa(self, imovel):
-        # as fotos já vêm do prefetch, ordenadas por ordem — sem capa marcada, vale a primeira
-        fotos = list(imovel.fotos.all())
-        if not fotos:
-            return None
-        foto = next((f for f in fotos if f.capa), fotos[0])
-        request = self.context.get("request")
-        return request.build_absolute_uri(foto.imagem.url) if request else foto.imagem.url
+
+class ImovelAcervoSerializer(FotoCapaMixin, serializers.ModelSerializer):
+    """Cartão do acervo do corretor: só o que a lista e o toque usam (APP08, D-13).
+
+    São 10 chaves — as 9 do D-13 mais `finalidade`, que o app precisa para decidir quais linhas de
+    preço mostrar, no mesmo formato do cartão público. Quem é "meu" (D-06) e se está "na vitrine"
+    (D-07) é calculado aqui, no Django: o app nunca compara ids nem reaplica a regra de publicação.
+    `na_vitrine` vem da anotação de `ImovelViewSet.get_queryset` (regra única `na_vitrine()`).
+    """
+
+    foto_capa = serializers.SerializerMethodField()
+    meu_imovel = serializers.SerializerMethodField()
+    na_vitrine = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = Imovel
+        fields = [
+            "id", "codigo", "titulo", "finalidade", "preco_venda", "preco_aluguel", "foto_capa",
+            "situacao", "meu_imovel", "na_vitrine",
+        ]
+
+    def get_meu_imovel(self, imovel):
+        # compara só o id da FK, sem consulta: o corretor responsável é o usuário logado?
+        return imovel.corretor_responsavel_id == self.context["request"].user.pk
 
 
 class ImovelVitrineDetalheSerializer(serializers.ModelSerializer):

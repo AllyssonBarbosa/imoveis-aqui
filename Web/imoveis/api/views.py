@@ -1,5 +1,5 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Prefetch
+from django.db.models import Exists, OuterRef, Prefetch
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, mixins, status, viewsets
@@ -18,6 +18,7 @@ from core.throttles import ThrottleVitrinePublica
 from empresas.models import Empresa
 from localizacao.models import Cidade
 
+from ..forms import FiltroImovelForm
 from ..models import (
     Caracteristica,
     DocumentoImovel,
@@ -42,6 +43,7 @@ from .serializers import (
     EnderecoSerializer,
     FotoImovelSerializer,
     HistoricoSituacaoSerializer,
+    ImovelAcervoSerializer,
     ImovelSerializer,
     ImovelVitrineDetalheSerializer,
     ImovelVitrineSerializer,
@@ -64,10 +66,49 @@ class CaracteristicaViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Caracteristica.objects.all()
 
 
+class PaginacaoAcervo(PageNumberPagination):
+    """Acervo do corretor: 20 por página, como as vitrines, e o cliente não muda o tamanho (D-10)."""
+
+    page_size = IMOVEIS_POR_PAGINA
+
+
 class ImovelViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
     serializer_class = ImovelSerializer
     permission_classes = [EhCorretor]
     queryset = IMOVEL_COM_DETALHES
+    # só `list` pagina: retrieve/create/update e as @action não chamam o paginador
+    pagination_class = PaginacaoAcervo
+
+    def get_serializer_class(self):
+        """A lista usa o cartão enxuto do acervo; o resto segue com o serializer completo."""
+        if self.action == "list":
+            return ImovelAcervoSerializer
+        return super().get_serializer_class()
+
+    def get_queryset(self):
+        """Acervo da empresa do corretor, na ordem fixa que permite paginar com estabilidade.
+
+        Ordem das camadas na lista: empresa (mixin, sempre primeiro — isolamento multitenant, AC-5)
+        -> `FiltroImovelForm` com busca e situação (a mesma regra do painel do corretor no site, D-11;
+        filtro inválido é ignorado, nunca erro; `corretor` e `empresa` na URL nem existem no
+        formulário) -> anotação `na_vitrine` (regra única `Imovel.objects.na_vitrine()`, D-07) -> ordem
+        (`-criado_em`, `-pk`: o `pk` desempata, senão a página pode repetir ou pular imóvel).
+        `select_related(None)` descarta os JOINs de natureza/endereço que o cartão não usa, sem
+        mexer no `prefetch_related("fotos")` nem no queryset do detalhe.
+        """
+        queryset = super().get_queryset()
+        if self.action != "list":
+            return queryset
+        filtro = FiltroImovelForm(
+            self.request.query_params or None,
+            empresa=self.request.user.empresa,
+            campos=["busca", "situacao"],
+        )
+        return (
+            filtro.filtrar(queryset.select_related(None))
+            .annotate(na_vitrine=Exists(Imovel.objects.na_vitrine().filter(pk=OuterRef("pk"))))
+            .order_by("-criado_em", "-pk")
+        )
 
     @action(detail=True, methods=["post"], serializer_class=MudancaSituacaoSerializer)
     def situacao(self, request, pk=None):
