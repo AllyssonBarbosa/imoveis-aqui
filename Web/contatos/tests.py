@@ -1,4 +1,5 @@
 from datetime import datetime
+from unittest import mock
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from django.urls import reverse
@@ -6,11 +7,13 @@ from django.utils import timezone
 from rest_framework import status
 
 from contas.models import Usuario
+from contas.tests import fixar_taxa_alta_no_login
 from imoveis.tests import (
     VitrineBase, criar_corretor, criar_empresa, criar_endereco, criar_gestor, criar_imovel,
     criar_proprietario,
 )
 
+from .api.views import PaginacaoContatos
 from .models import Contato
 
 
@@ -66,7 +69,7 @@ class ContatoBase(VitrineBase):
         self.client.force_login(usuario)
         response = self.client.get(reverse("contato-list"), filtros)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        return {item["id"] for item in response.data}
+        return {item["id"] for item in response.data["results"]}
 
     def anotar(self, usuario, contato, retorno):
         self.client.force_login(usuario)
@@ -244,6 +247,93 @@ class CaixaDeContatosTests(ContatoBase):
             self.client.force_login(usuario)
             response = self.client.get(reverse("contas:painel"))
             self.assertContains(response, reverse("contatos:contato_list"))
+
+
+class PaginacaoDaCaixaTests(ContatoBase):
+    """D-12: a lista do app vem em envelope paginado, 20 por página, mais recentes primeiro."""
+
+    CHAVES_DO_ITEM = {
+        "id", "imovel", "imovel_codigo", "imovel_titulo", "corretor", "corretor_nome", "canal",
+        "canal_exibicao", "criado_em", "retorno", "retorno_exibicao", "retorno_em",
+    }
+
+    def setUp(self):
+        super().setUp()
+        canais = [Contato.Canal.WHATSAPP, Contato.Canal.TELEFONE, Contato.Canal.EMAIL]
+        for numero in range(25):
+            Contato.objects.create(
+                empresa_id=self.empresa.pk, imovel=self.casa, corretor=self.corretor,
+                canal=canais[numero % 3],
+            )
+
+    def test_ponta_a_ponta_com_login_real_e_token(self):
+        fixar_taxa_alta_no_login(self)
+        login = self.client.post(
+            reverse("api-login"), {"email": self.corretor.email, "password": "senha-forte-123"}
+        )
+        self.assertEqual(login.status_code, status.HTTP_200_OK)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {login.data['token']}")
+        response = self.client.get(reverse("contato-list"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(response.data), {"count", "next", "previous", "results"})
+        self.assertEqual(response.data["count"], 25)
+        self.assertEqual(len(response.data["results"]), 20)
+
+    def test_primeira_e_segunda_pagina(self):
+        self.client.force_login(self.corretor)
+        url = reverse("contato-list")
+        primeira = self.client.get(url)
+        self.assertEqual(len(primeira.data["results"]), 20)
+        self.assertEqual(primeira.data["count"], 25)
+        self.assertTrue(primeira.data["next"].startswith("http://testserver/"))
+        self.assertIn("page=2", primeira.data["next"])
+        self.assertIsNone(primeira.data["previous"])
+        segunda = self.client.get(url, {"page": 2})
+        self.assertEqual(len(segunda.data["results"]), 5)
+        self.assertIsNone(segunda.data["next"])
+        self.assertIsNotNone(segunda.data["previous"])
+
+    def test_todo_item_tem_as_12_chaves_do_serializer(self):
+        self.client.force_login(self.corretor)
+        for item in self.client.get(reverse("contato-list")).data["results"]:
+            self.assertEqual(set(item), self.CHAVES_DO_ITEM)
+
+    def test_ordem_das_duas_paginas_e_a_do_servidor(self):
+        self.client.force_login(self.corretor)
+        url = reverse("contato-list")
+        ids = [item["id"] for item in self.client.get(url).data["results"]]
+        ids += [item["id"] for item in self.client.get(url, {"page": 2}).data["results"]]
+        esperado = list(
+            Contato.objects.filter(corretor=self.corretor).order_by("-criado_em", "-id").values_list("id", flat=True)
+        )
+        self.assertEqual(ids, esperado)
+
+    def test_next_preserva_os_filtros(self):
+        self.client.force_login(self.corretor)
+        with mock.patch.object(PaginacaoContatos, "page_size", 1):
+            response = self.client.get(reverse("contato-list"), {"de": "2020-01-01", "ate": "2100-12-31"})
+        proximo = response.data["next"]
+        self.assertIn("de=2020-01-01", proximo)
+        self.assertIn("ate=2100-12-31", proximo)
+        self.assertIn("page=2", proximo)
+
+    def test_pagina_inexistente_da_404_e_tamanho_do_cliente_e_ignorado(self):
+        self.client.force_login(self.corretor)
+        url = reverse("contato-list")
+        self.assertEqual(self.client.get(url, {"page": 99}).status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(len(self.client.get(url, {"page_size": 50}).data["results"]), 20)
+
+    def test_detalhe_e_patch_devolvem_o_item_sem_envelope(self):
+        self.client.force_login(self.corretor)
+        contato = Contato.objects.filter(corretor=self.corretor).first()
+        url = reverse("contato-detail", args=[contato.pk])
+        detalhe = self.client.get(url)
+        self.assertEqual(detalhe.data["id"], contato.pk)
+        self.assertNotIn("results", detalhe.data)
+        anotado = self.client.patch(url, {"retorno": "FALEI"}, format="json")
+        self.assertEqual(anotado.status_code, status.HTTP_200_OK)
+        self.assertEqual(anotado.data["id"], contato.pk)
+        self.assertNotIn("results", anotado.data)
 
 
 class AnotarRetornoTests(ContatoBase):

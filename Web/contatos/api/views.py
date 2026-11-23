@@ -2,6 +2,7 @@ from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from rest_framework import mixins, status, viewsets
 from rest_framework.exceptions import ValidationError
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -42,6 +43,18 @@ class ContatoPublicoAPIView(APIView):
         return Response({"canal": canal, "link": link}, status=status.HTTP_201_CREATED)
 
 
+CONTATOS_POR_PAGINA = 20
+
+
+class PaginacaoContatos(PageNumberPagination):
+    """Caixa do app: 20 por página, como o acervo e as vitrines (D-12).
+
+    O cliente não escolhe o tamanho da página: sem `page_size_query_param`.
+    """
+
+    page_size = CONTATOS_POR_PAGINA
+
+
 class ContatoViewSet(
     EmpresaScopedQuerySetMixin,
     mixins.ListModelMixin,
@@ -49,7 +62,7 @@ class ContatoViewSet(
     mixins.UpdateModelMixin,
     viewsets.GenericViewSet,
 ):
-    """Caixa de contatos do app: lista (?imovel=&de=&ate=), detalhe e PATCH do retorno.
+    """Caixa de contatos do app: lista paginada (?imovel=&de=&ate=&page=), detalhe e PATCH do retorno.
 
     O EmpresaScopedQuerySetMixin filtra pela empresa; depois o perfil corta
     o resto (corretor só vê os dele). Contato de fora cai em 404.
@@ -58,6 +71,8 @@ class ContatoViewSet(
     serializer_class = ContatoSerializer
     permission_classes = [PertenceAUmaEmpresa]
     queryset = Contato.objects.select_related("imovel", "corretor")
+    # só `list` pagina: retrieve/PATCH e as @action não chamam o paginador
+    pagination_class = PaginacaoContatos
     http_method_names = ["get", "patch", "head", "options"]
 
     def get_queryset(self):
