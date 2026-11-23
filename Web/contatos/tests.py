@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timezone as fuso_utc
 from unittest import mock
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from django.urls import reverse
+from django.urls import resolve, reverse
 from django.utils import timezone
 from rest_framework import status
 
@@ -229,6 +229,15 @@ class CaixaDeContatosTests(ContatoBase):
         self.assertEqual(self.ids_caixa(self.corretor, ate="2026-01-31"), {self.antigo.pk})
         self.assertEqual(self.ids_api(self.corretor, de="2026-02-01"), {self.da_casa.pk, self.do_sobrado.pk})
 
+    def test_periodo_recorta_pelo_dia_de_sao_paulo(self):
+        # 10/01/2026 01:30 UTC ainda é 09/01 22:30 em São Paulo (TIME_ZONE = America/Sao_Paulo)
+        madrugada = self.novo_contato(self.casa)
+        Contato.objects.filter(pk=madrugada.pk).update(
+            criado_em=datetime(2026, 1, 10, 1, 30, tzinfo=fuso_utc.utc)
+        )
+        self.assertEqual(self.ids_api(self.corretor, de="2026-01-09", ate="2026-01-09"), {madrugada.pk})
+        self.assertNotIn(madrugada.pk, self.ids_api(self.corretor, de="2026-01-10", ate="2026-01-10"))
+
     def test_filtro_combinado_imovel_e_periodo(self):
         self.assertEqual(
             self.ids_caixa(self.corretor, imovel=self.casa.pk, de="2026-02-01"), {self.da_casa.pk}
@@ -387,6 +396,34 @@ class AnotarRetornoTests(ContatoBase):
         self.assertEqual(self.contato.imovel, self.casa)
         self.assertEqual(self.client.patch(url, {"retorno": "PENDENTE"}, format="json").status_code, 400)
 
+    def test_api_patch_sem_retorno_da_400_e_nao_muda_o_contato(self):
+        # emenda ao D-25: PATCH {} derrubava o servidor com KeyError (500)
+        self.client.force_login(self.corretor)
+        response = self.client.patch(reverse("contato-detail", args=[self.contato.pk]), {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("retorno", response.data)
+        self.contato.refresh_from_db()
+        self.assertEqual(self.contato.retorno, Contato.Retorno.PENDENTE)
+        self.assertIsNone(self.contato.retorno_em)
+
+    def test_api_put_continua_405(self):
+        self.client.force_login(self.corretor)
+        response = self.client.put(
+            reverse("contato-detail", args=[self.contato.pk]), {"retorno": "FALEI"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_api_patch_devolve_o_item_com_as_12_chaves_e_fuso_de_sao_paulo(self):
+        self.client.force_login(self.corretor)
+        response = self.client.patch(
+            reverse("contato-detail", args=[self.contato.pk]), {"retorno": "FALEI"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(response.data), PaginacaoDaCaixaTests.CHAVES_DO_ITEM)
+        self.assertEqual(response.data["retorno"], "FALEI")
+        self.assertIsNotNone(response.data["retorno_em"])
+        self.assertTrue(response.json()["criado_em"].endswith("-03:00"))
+
     def test_api_nao_cria_nem_apaga_contato(self):
         self.client.force_login(self.corretor)
         self.assertEqual(
@@ -399,9 +436,9 @@ class AnotarRetornoTests(ContatoBase):
         )
 
 
-class IsolamentoTests(ContatoBase):
-    """Critério 6: o contato aparece para o corretor do imóvel e para o gestor da empresa,
-    nunca para outro corretor nem para outra empresa (no painel e na API)."""
+class CenarioDeIsolamento(ContatoBase):
+    """Um contato do corretor 1, um do corretor 2, um da outra empresa e um da empresa A
+    (corretor desativado na hora do clique) — o cenário do critério 6."""
 
     def setUp(self):
         super().setUp()
@@ -414,6 +451,11 @@ class IsolamentoTests(ContatoBase):
         self.corretor.is_active = True
         self.corretor.save(update_fields=["is_active"])
         self.da_empresa_a = {self.do_corretor1.pk, self.do_corretor2.pk, self.da_empresa.pk}
+
+
+class IsolamentoTests(CenarioDeIsolamento):
+    """Critério 6: o contato aparece para o corretor do imóvel e para o gestor da empresa,
+    nunca para outro corretor nem para outra empresa (no painel e na API)."""
 
     def test_corretor_ve_so_os_proprios_contatos(self):
         self.assertEqual(self.ids_caixa(self.corretor), {self.do_corretor1.pk})
@@ -480,3 +522,125 @@ class IsolamentoTests(ContatoBase):
             self.client.get(reverse("contato-list")).status_code,
             (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
         )
+
+    def test_resumo_e_opcoes_de_imovel_batem_com_o_que_cada_usuario_ve(self):
+        # D-13: contagem e opções saem do mesmo recorte da lista, nunca de outra empresa/corretor
+        self.do_corretor2.anotar_retorno(Contato.Retorno.FALEI)
+        usuarios = (self.corretor, self.corretor2, self.gestor, self.corretor_b, self.gestor_b)
+        for usuario in usuarios:
+            with self.subTest(usuario=usuario.email):
+                ids = self.ids_api(usuario)
+                pendentes = Contato.objects.filter(pk__in=ids, retorno=Contato.Retorno.PENDENTE).count()
+                resumo = self.client.get(reverse("contato-resumo"))
+                self.assertEqual(resumo.data["sem_retorno"], pendentes)
+                opcoes = self.client.get(reverse("contato-imoveis"))
+                self.assertEqual(
+                    {item["id"] for item in opcoes.data},
+                    set(Contato.objects.filter(pk__in=ids).values_list("imovel_id", flat=True)),
+                )
+
+
+class ResumoSemRetornoTests(CenarioDeIsolamento):
+    """Critério 6 (D-04..D-06): o número de contatos sem retorno é calculado no Django,
+    só sobre o que o usuário vê, e ignora os filtros da lista."""
+
+    def setUp(self):
+        super().setUp()
+        # um contato do corretor 1 já anotado: não conta como sem retorno
+        self.anotado = self.novo_contato(self.casa)
+        self.anotado.anotar_retorno(Contato.Retorno.FALEI)
+
+    def sem_retorno(self, usuario, **filtros):
+        self.client.force_login(usuario)
+        response = self.client.get(reverse("contato-resumo"), filtros)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(response.data), {"sem_retorno"})
+        return response.data["sem_retorno"]
+
+    def test_cada_usuario_conta_so_os_pendentes_que_ve(self):
+        self.assertEqual(self.sem_retorno(self.corretor), 1)
+        self.assertEqual(self.sem_retorno(self.corretor2), 1)
+        # o gestor inclui o contato que foi para a empresa (corretor desativado)
+        self.assertEqual(self.sem_retorno(self.gestor), 3)
+        self.assertEqual(self.sem_retorno(self.corretor_b), 1)
+        self.assertEqual(self.sem_retorno(self.gestor_b), 1)
+
+    def test_ignora_imovel_periodo_e_pagina(self):
+        base = self.sem_retorno(self.corretor)
+        filtros = (
+            {"imovel": self.casa2.pk}, {"de": "2100-01-01"}, {"ate": "2000-01-01"},
+            {"page": 9}, {"de": "invalida"}, {"imovel": "abc", "de": "2100-01-01", "page": 3},
+        )
+        for filtro in filtros:
+            with self.subTest(filtro=filtro):
+                self.assertEqual(self.sem_retorno(self.corretor, **filtro), base)
+
+    def test_cai_depois_de_anotar_o_retorno(self):
+        outro = self.novo_contato(self.casa)
+        self.assertEqual(self.sem_retorno(self.corretor), 2)
+        url = reverse("contato-detail", args=[outro.pk])
+        self.assertEqual(self.client.patch(url, {"retorno": "FALEI"}, format="json").status_code, 200)
+        self.assertEqual(self.sem_retorno(self.corretor), 1)
+
+    def test_rotas_novas_nao_colidem_com_o_detalhe(self):
+        self.assertEqual(reverse("contato-resumo"), "/api/contatos/resumo/")
+        self.assertEqual(resolve("/api/contatos/resumo/").url_name, "contato-resumo")
+        self.assertEqual(reverse("contato-imoveis"), "/api/contatos/imoveis/")
+        self.assertEqual(resolve("/api/contatos/imoveis/").url_name, "contato-imoveis")
+        self.assertTrue(reverse("contato-detail", args=[5]).endswith("/contatos/5/"))
+
+    def test_administrador_e_anonimo_nao_acessam(self):
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(reverse("contato-resumo")).status_code, status.HTTP_403_FORBIDDEN)
+        self.client.logout()
+        self.assertEqual(self.client.get(reverse("contato-resumo")).status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class OpcoesDeImovelDaCaixaTests(CenarioDeIsolamento):
+    """D-19: as opções do filtro de imóvel são só os imóveis dos contatos visíveis,
+    por código — a mesma regra do seletor do site."""
+
+    def opcoes(self, usuario, **filtros):
+        self.client.force_login(usuario)
+        response = self.client.get(reverse("contato-imoveis"), filtros)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(response.data, list)
+        for item in response.data:
+            self.assertEqual(set(item), {"id", "codigo", "titulo"})
+        return response.data
+
+    def test_corretor_so_ve_os_imoveis_dos_proprios_contatos(self):
+        opcoes = self.opcoes(self.corretor)
+        self.assertEqual([item["id"] for item in opcoes], [self.casa.pk])
+        self.assertEqual(opcoes[0]["codigo"], self.casa.codigo)
+        self.assertEqual(opcoes[0]["titulo"], self.casa.titulo)
+
+    def test_gestor_ve_os_da_empresa_ordenados_por_codigo(self):
+        opcoes = self.opcoes(self.gestor)
+        self.assertEqual({item["id"] for item in opcoes}, {self.casa.pk, self.casa2.pk, self.sobrado.pk})
+        codigos = [item["codigo"] for item in opcoes]
+        self.assertEqual(codigos, sorted(codigos))
+        self.assertIn("DO-CORRETOR-2", codigos)
+        for sem_contato in (self.rascunho, self.da_inativa):
+            self.assertNotIn(sem_contato.codigo, codigos)
+
+    def test_outra_empresa_so_ve_o_proprio_imovel(self):
+        for usuario in (self.corretor_b, self.gestor_b):
+            with self.subTest(usuario=usuario.email):
+                self.assertEqual([item["codigo"] for item in self.opcoes(usuario)], ["OUTRA-1"])
+
+    def test_bate_com_o_seletor_do_site(self):
+        for usuario in (self.corretor, self.gestor):
+            with self.subTest(usuario=usuario.email):
+                do_site = [imovel.pk for imovel in self.caixa(usuario).context["imoveis"]]
+                self.assertEqual([item["id"] for item in self.opcoes(usuario)], do_site)
+
+    def test_ignora_os_filtros_da_lista(self):
+        sem_filtro = self.opcoes(self.corretor)
+        self.assertEqual(self.opcoes(self.corretor, imovel=self.casa2.pk, de="2100-01-01"), sem_filtro)
+
+    def test_administrador_e_anonimo_nao_acessam(self):
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(reverse("contato-imoveis")).status_code, status.HTTP_403_FORBIDDEN)
+        self.client.logout()
+        self.assertEqual(self.client.get(reverse("contato-imoveis")).status_code, status.HTTP_401_UNAUTHORIZED)

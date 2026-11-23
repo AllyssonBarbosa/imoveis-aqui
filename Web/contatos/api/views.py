@@ -1,6 +1,7 @@
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from rest_framework import mixins, status, viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
@@ -9,10 +10,14 @@ from rest_framework.views import APIView
 
 from core.mixins import EmpresaScopedQuerySetMixin
 from core.permissions import PertenceAUmaEmpresa
+from imoveis.models import Imovel
 from imoveis.vitrine import FiltroInvalido, imoveis_da_vitrine
 
 from ..models import Contato
-from ..servicos import CanalIndisponivel, filtrar_contatos, registrar_contato, restringir_ao_perfil
+from ..servicos import (
+    CanalIndisponivel, contatos_visiveis_para, filtrar_contatos, registrar_contato,
+    restringir_ao_perfil,
+)
 from .serializers import ContatoSerializer, NovoContatoSerializer
 
 
@@ -83,3 +88,15 @@ class ContatoViewSet(
             return filtrar_contatos(queryset, self.request.query_params)
         except FiltroInvalido as erro:
             raise ValidationError(erro.erros)
+
+    @action(detail=False, methods=["get"])
+    def resumo(self, request):
+        """Critério 6: quantos contatos visíveis ainda estão sem retorno; ignora os filtros (D-05)."""
+        sem_retorno = contatos_visiveis_para(request.user).filter(retorno=Contato.Retorno.PENDENTE).count()
+        return Response({"sem_retorno": sem_retorno})
+
+    @action(detail=False, methods=["get"])
+    def imoveis(self, request):
+        """Opções do filtro de imóvel: só os imóveis dos contatos visíveis, por código (D-19)."""
+        imoveis = Imovel.objects.filter(pk__in=contatos_visiveis_para(request.user).values("imovel"))
+        return Response(list(imoveis.order_by("codigo").values("id", "codigo", "titulo")))
