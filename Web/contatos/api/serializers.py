@@ -30,6 +30,13 @@ class ContatoSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "imovel", "corretor", "canal", "criado_em", "retorno_em"]
 
+    def validate(self, atributos):
+        # no PATCH parcial o campo não é obrigatório e o `update` levantaria KeyError (500):
+        # sem `retorno` não há o que anotar — emenda ao D-25
+        if "retorno" not in atributos:
+            raise serializers.ValidationError({"retorno": ["Este campo é obrigatório."]})
+        return atributos
+
     def update(self, instance, validated_data):
         instance.anotar_retorno(validated_data["retorno"])
         return instance

@@ -185,8 +185,10 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `GET /api/publico/cidades/<id>/imoveis/` | Busca na cidade, com filtros, ordenação e paginação (ver abaixo) | público — vitrine (site e app) |
 | `GET /api/publico/imoveis/<id>/` | Detalhe do imóvel: fotos, dados da natureza, endereço com coordenada e corretor | público — vitrine (site e app) |
 | `POST /api/publico/imoveis/<id>/contato/` | Grava o contato — corpo `{ "canal": "WHATSAPP" \| "TELEFONE" \| "EMAIL" }`, devolve `{ "canal", "link" }` para o app abrir | público — vitrine (site e app) |
-| `GET /api/contatos/?imovel=&de=&ate=` | Caixa de contatos (mesmos filtros e mesma regra de quem vê do painel) | app, corretor e gestor |
-| `PATCH /api/contatos/<id>/` | Anota o retorno — corpo `{ "retorno": "FALEI" \| "VISITA_AGENDADA" \| "SEM_RESPOSTA" \| "DESCARTADO" }` | app, corretor e gestor |
+| `GET /api/contatos/?imovel=&de=&ate=&page=` | Caixa de contatos paginada (20 por página, `next` absoluto; mesmos filtros e mesma regra de quem vê do painel; mais recentes primeiro) | app, corretor e gestor |
+| `GET /api/contatos/resumo/` | Quantos contatos visíveis ao usuário ainda estão sem retorno — `{ "sem_retorno": N }`; ignora os filtros da lista | app, corretor e gestor |
+| `GET /api/contatos/imoveis/` | Opções do filtro de imóvel da caixa: `[{ "id", "codigo", "titulo" }]` só dos imóveis que aparecem nos contatos visíveis, por código, sem paginação | app, corretor e gestor |
+| `PATCH /api/contatos/<id>/` | Anota o retorno — corpo `{ "retorno": "FALEI" \| "VISITA_AGENDADA" \| "SEM_RESPOSTA" \| "DESCARTADO" }`; corpo sem `retorno` → 400 | app, corretor e gestor |
 
 ## Site público (W10)
 
