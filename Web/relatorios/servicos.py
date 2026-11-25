@@ -6,6 +6,7 @@ Nada é gravado: os números saem das tabelas na hora da consulta.
 - acervo_por_natureza_e_situacao(): quantos imóveis em cada natureza × situação;
 - acervo_por_corretor(): quantos imóveis cada corretor tem (Área do gestor do app, APP12);
 - contatos_por_corretor(): quantos contatos cada corretor recebeu no período;
+- mudancas_de_situacao(): mudanças de situação dos imóveis nos últimos dias (Área do gestor do app, APP12);
 - parcelas_em_atraso_e_a_vencer(): parcelas atrasadas e as que vencem nos próximos dias.
 """
 
@@ -19,11 +20,14 @@ from contas.models import Usuario
 from contatos.models import Contato
 from contatos.servicos import filtrar_contatos
 from contratos.models import Parcela
-from imoveis.models import Imovel
+from imoveis.models import HistoricoSituacao, Imovel
 from imoveis.vitrine import FiltroInvalido
 
 DIAS_A_VENCER_PADRAO = 30
 DIAS_A_VENCER_MAXIMO = 365
+# "Últimos dias" da Área do gestor = hoje e os 6 anteriores, no dia de São Paulo (D-19).
+# Mudar a janela do app é mudar só esta constante, sem nova versão do aplicativo.
+DIAS_MUDANCAS_PADRAO = 7
 
 
 def acervo_por_natureza_e_situacao(empresa_id):
@@ -122,11 +126,30 @@ def acervo_por_corretor(empresa_id):
     return {"linhas": linhas, "total": imoveis.count()}
 
 
-def ler_dias(valor):
-    """?dias= do relatório de parcelas: de 1 a 365, padrão 30."""
+def mudancas_de_situacao(empresa_id, dias=DIAS_MUDANCAS_PADRAO, hoje=None):
+    """Mudanças de situação dos imóveis da empresa nos últimos `dias` (critério 3 da Área do gestor, APP12).
+
+    Janela inclusiva no dia de São Paulo: de hoje - (dias - 1) até hoje. Entram todas as mudanças do
+    HistoricoSituacao, inclusive as gravadas pela assinatura de contrato, da mais recente para a mais
+    antiga (ordem do modelo: -alterado_em, -id). Sem paginação: a janela de dias já limita o tamanho.
+    """
+    hoje = hoje or timezone.localdate()
+    desde = hoje - timedelta(days=dias - 1)
+    mudancas = (
+        HistoricoSituacao.objects.filter(
+            imovel__empresa_id=empresa_id, alterado_em__date__gte=desde, alterado_em__date__lte=hoje
+        )
+        .select_related("imovel", "alterado_por")
+        .order_by("-alterado_em", "-id")
+    )
+    return {"dias": dias, "desde": desde, "mudancas": list(mudancas)}
+
+
+def ler_dias(valor, padrao=DIAS_A_VENCER_PADRAO):
+    """?dias= dos relatórios: de 1 a 365; vazio = `padrao` (30 nas parcelas)."""
     valor = (valor or "").strip()
     if not valor:
-        return DIAS_A_VENCER_PADRAO
+        return padrao
     if not valor.isdigit() or not 1 <= int(valor) <= DIAS_A_VENCER_MAXIMO:
         raise FiltroInvalido({"dias": f"Informe um número de dias entre 1 e {DIAS_A_VENCER_MAXIMO}."})
     return int(valor)

@@ -4,6 +4,7 @@ Valores em dinheiro saem como texto ("1234.50"), igual ao resto da API,
 para não perder centavos com número de ponto flutuante.
 """
 
+from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -12,8 +13,8 @@ from core.permissions import EhGestor
 from imoveis.vitrine import FiltroInvalido
 
 from ..servicos import (
-    acervo_por_corretor, acervo_por_natureza_e_situacao, contatos_por_corretor, ler_dias,
-    parcelas_em_atraso_e_a_vencer,
+    DIAS_MUDANCAS_PADRAO, acervo_por_corretor, acervo_por_natureza_e_situacao, contatos_por_corretor,
+    ler_dias, mudancas_de_situacao, parcelas_em_atraso_e_a_vencer,
 )
 
 
@@ -43,6 +44,39 @@ class ContatosApiView(RelatorioApiView):
             return Response(contatos_por_corretor(request.user.empresa_id, request.query_params))
         except FiltroInvalido as erro:
             raise ValidationError(erro.erros)
+
+
+def _mudanca(historico):
+    """Lista fechada de campos (D-20): nada de proprietário, preço nem dado interno do imóvel."""
+    imovel = historico.imovel
+    return {
+        "id": historico.pk,
+        "imovel_id": imovel.pk,
+        "imovel_codigo": imovel.codigo,
+        "imovel_titulo": imovel.titulo,
+        "situacao_anterior": historico.situacao_anterior,
+        "situacao_nova": historico.situacao_nova,
+        "alterado_por": historico.alterado_por.nome,
+        # mesmo formato do HistoricoSituacaoSerializer: hora de São Paulo com offset (-03:00)
+        "alterado_em": serializers.DateTimeField().to_representation(historico.alterado_em),
+        "observacao": historico.observacao,
+    }
+
+
+class MudancasSituacaoApiView(RelatorioApiView):
+    """GET /api/relatorios/mudancas-situacao/?dias=7 — mudanças de situação dos últimos dias, com quem mudou (critério 3)."""
+
+    def get(self, request):
+        try:
+            dias = ler_dias(request.query_params.get("dias"), padrao=DIAS_MUDANCAS_PADRAO)
+        except FiltroInvalido as erro:
+            raise ValidationError(erro.erros)
+        relatorio = mudancas_de_situacao(request.user.empresa_id, dias)
+        return Response({
+            "dias": relatorio["dias"],
+            "desde": relatorio["desde"],
+            "mudancas": [_mudanca(historico) for historico in relatorio["mudancas"]],
+        })
 
 
 def _parcela(parcela):
