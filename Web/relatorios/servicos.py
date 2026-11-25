@@ -4,6 +4,7 @@ Todos recebem a empresa do usuário logado e só contam o que é dela.
 Nada é gravado: os números saem das tabelas na hora da consulta.
 
 - acervo_por_natureza_e_situacao(): quantos imóveis em cada natureza × situação;
+- acervo_por_corretor(): quantos imóveis cada corretor tem (Área do gestor do app, APP12);
 - contatos_por_corretor(): quantos contatos cada corretor recebeu no período;
 - parcelas_em_atraso_e_a_vencer(): parcelas atrasadas e as que vencem nos próximos dias.
 """
@@ -92,6 +93,33 @@ def contatos_por_corretor(empresa_id, params):
         "total": sum(linha["total"] for linha in linhas),
         "pendentes": sum(linha["pendentes"] for linha in linhas),
     }
+
+
+def acervo_por_corretor(empresa_id):
+    """Quantos imóveis cada corretor tem (critério 1 da Área do gestor, APP12).
+
+    A mesma base de acervo_por_natureza_e_situacao: todos os imóveis da empresa, em qualquer
+    situação, publicados ou não, agrupados por corretor_responsavel; a soma das linhas fecha com o
+    `total`. Aparece todo corretor ativo da empresa, mesmo com zero (quem está sem acervo é o que o
+    gestor quer ver), e também o usuário desativado que ainda é responsável por imóvel (`ativo` falso).
+    Ordem: quem tem mais primeiro e, no empate, por nome.
+    """
+    imoveis = Imovel.objects.filter(empresa_id=empresa_id)
+    agrupado = {
+        linha["corretor_responsavel"]: linha["total"]
+        for linha in imoveis.values("corretor_responsavel").annotate(total=Count("id"))
+    }
+    usuarios = Usuario.objects.filter(
+        Q(pk__in=list(agrupado))
+        | Q(empresa_id=empresa_id, perfil=Usuario.Perfil.CORRETOR, is_active=True)
+    ).order_by("nome")
+    linhas = [
+        {"corretor_id": usuario.pk, "corretor": usuario.nome, "ativo": usuario.is_active,
+         "total": agrupado.get(usuario.pk, 0)}
+        for usuario in usuarios
+    ]
+    linhas.sort(key=lambda linha: -linha["total"])  # quem tem mais primeiro (empate: ordem do nome)
+    return {"linhas": linhas, "total": imoveis.count()}
 
 
 def ler_dias(valor):

@@ -170,6 +170,7 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `GET /api/baixas/<id>/comprovante/` | Baixa o comprovante, conferindo empresa e perfil | app, gestor e corretor do contrato |
 | `POST /api/contratos/<id>/assinar/` | Assina o contrato — corpo `{ "data_assinatura": "AAAA-MM-DD" }` | app, gestor |
 | `GET /api/relatorios/acervo/`, `GET /api/relatorios/contatos/?de=&ate=` e `GET /api/relatorios/parcelas/?dias=30` | Os mesmos relatórios do painel (dinheiro em texto, ex.: `"1234.50"`) | app, gestor |
+| `GET /api/relatorios/acervo-por-corretor/` | Quantos imóveis cada corretor tem (todos os imóveis da empresa, em qualquer situação): `{ "linhas": [{ "corretor_id", "corretor", "ativo", "total" }], "total" }`; corretor ativo sem imóvel aparece com zero; quem tem mais primeiro | app, gestor |
 | `GET /api/imoveis/?busca=&situacao=&page=` | Acervo do corretor: imóveis da própria empresa, paginados (20 por página, `next` absoluto), busca por código ou título, filtro por situação (`DISPONIVEL`, `RESERVADO`, `VENDIDO`, `ALUGADO`; filtro inválido é ignorado) e só os 10 campos do cartão (`meu_imovel`, `na_vitrine` calculados no servidor) | app, corretor |
 | `POST /api/imoveis/` | Cadastra imóvel da própria empresa | app, corretor |
 | `GET/PUT /api/imoveis/<id>/endereco/` | Lê/grava o endereço do imóvel (cidade, CEP, latitude, longitude) | app, corretor |

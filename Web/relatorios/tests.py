@@ -15,16 +15,20 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from contas.models import Usuario
+from contas.tests import fixar_taxa_alta_no_login
 from contatos.models import Contato
 from contratos.models import Baixa
 from contratos.servicos import assinar_contrato, registrar_baixa, salvar_contrato
 from contratos.tests import ONTEM, CenarioContrato
 from contratos.tests_arquivos import gerar_pdf
 from imoveis.models import Imovel
-from imoveis.tests import criar_imovel
+from imoveis.tests import criar_corretor, criar_imovel
 from imoveis.vitrine import FiltroInvalido
 
-from .servicos import acervo_por_natureza_e_situacao, contatos_por_corretor, parcelas_em_atraso_e_a_vencer
+from .servicos import (
+    acervo_por_corretor, acervo_por_natureza_e_situacao, contatos_por_corretor, parcelas_em_atraso_e_a_vencer,
+)
 
 
 class RelatoriosBase(CenarioContrato):
@@ -259,3 +263,111 @@ class ApiRelatoriosTests(RelatoriosBase, APITestCase):
         dados = self.client.get(reverse("relatorio-contatos"), {"de": "2027-02-01", "ate": "2027-02-28"}).data
         self.assertEqual(dados["total"], 1)
         self.assertEqual(dados["linhas"][0]["corretor_id"], self.corretor.pk)
+
+
+class AcervoPorCorretorTests(RelatoriosBase, TestCase):
+    """Acervo por corretor (critério 1 do card APP12; D-12 e D-13).
+
+    Mesma base do acervo por natureza × situação: todos os imóveis da empresa, em qualquer
+    situação, publicados ou não. Todo corretor ativo aparece, mesmo com zero; o desativado que
+    ainda é responsável por imóvel aparece com `ativo` falso. Quem tem mais vem primeiro e, no
+    empate, por nome. Nada de outra empresa entra.
+    """
+
+    def linhas(self, empresa_id=None):
+        relatorio = acervo_por_corretor(empresa_id or self.empresa.pk)
+        return {linha["corretor_id"]: linha for linha in relatorio["linhas"]}, relatorio
+
+    def test_conta_por_corretor_e_corretor_ativo_sem_imovel_aparece_com_zero(self):
+        linhas, relatorio = self.linhas()
+        self.assertEqual(linhas[self.corretor.pk]["total"], 4)
+        self.assertEqual(linhas[self.corretor2.pk]["total"], 0)  # ativo, sem imóvel: aparece com zero
+        self.assertTrue(linhas[self.corretor.pk]["ativo"])
+        self.assertEqual(relatorio["total"], 4)
+
+    def test_cada_linha_tem_so_as_quatro_chaves(self):
+        for linha in acervo_por_corretor(self.empresa.pk)["linhas"]:
+            self.assertEqual(set(linha), {"corretor_id", "corretor", "ativo", "total"})
+
+    def test_soma_das_linhas_fecha_com_o_total_do_acervo_por_natureza(self):
+        relatorio = acervo_por_corretor(self.empresa.pk)
+        self.assertEqual(sum(linha["total"] for linha in relatorio["linhas"]), relatorio["total"])
+        self.assertEqual(relatorio["total"], acervo_por_natureza_e_situacao(self.empresa.pk)["total"])
+
+    def test_imovel_nao_publicado_tambem_conta(self):
+        criar_imovel(self.empresa, self.corretor2, self.casa.proprietario, codigo="RASCUNHO-1", publicado=False)
+        linhas, relatorio = self.linhas()
+        self.assertEqual(linhas[self.corretor2.pk]["total"], 1)
+        self.assertEqual(relatorio["total"], 5)
+
+    def test_gestor_sem_imovel_nao_aparece_e_outra_empresa_nunca(self):
+        linhas, _ = self.linhas()
+        self.assertNotIn(self.gestor.pk, linhas)
+        self.assertNotIn(self.corretor_b.pk, linhas)
+        self.assertEqual(set(linhas), {self.corretor.pk, self.corretor2.pk})
+
+    def test_outra_empresa_ve_so_o_corretor_dela(self):
+        linhas, relatorio = self.linhas(self.outra.pk)
+        self.assertEqual(set(linhas), {self.corretor_b.pk})
+        self.assertEqual(linhas[self.corretor_b.pk]["total"], 2)
+        self.assertEqual(relatorio["total"], 2)
+
+    def test_corretor_desativado_que_ainda_e_responsavel_aparece_como_inativo(self):
+        antigo = criar_corretor(self.empresa, email="antigo@teste.com")
+        criar_imovel(self.empresa, antigo, self.casa.proprietario, codigo="ANTIGO-1")
+        criar_imovel(self.empresa, antigo, self.casa.proprietario, codigo="ANTIGO-2")
+        Usuario.objects.filter(pk=antigo.pk).update(is_active=False)
+        linhas, relatorio = self.linhas()
+        self.assertFalse(linhas[antigo.pk]["ativo"])
+        self.assertEqual(linhas[antigo.pk]["total"], 2)
+        self.assertEqual(relatorio["total"], 6)
+
+    def test_corretor_desativado_sem_imovel_nao_aparece(self):
+        Usuario.objects.filter(pk=self.corretor2.pk).update(is_active=False)
+        linhas, _ = self.linhas()
+        self.assertNotIn(self.corretor2.pk, linhas)
+
+    def test_quem_tem_mais_vem_primeiro_e_no_empate_por_nome(self):
+        outro = criar_corretor(self.empresa, email="outro@teste.com")
+        Usuario.objects.filter(pk=self.corretor2.pk).update(nome="Zeca")
+        Usuario.objects.filter(pk=outro.pk).update(nome="Ana")
+        criar_imovel(self.empresa, self.corretor2, self.casa.proprietario, codigo="Z-1")
+        criar_imovel(self.empresa, outro, self.casa.proprietario, codigo="A-1")
+        linhas = acervo_por_corretor(self.empresa.pk)["linhas"]
+        self.assertEqual([linha["corretor_id"] for linha in linhas],
+                         [self.corretor.pk, outro.pk, self.corretor2.pk])
+        self.assertEqual([linha["total"] for linha in linhas], [4, 1, 1])
+
+
+class AreaDoGestorApiTests(RelatoriosBase, APITestCase):
+    """Rotas da Área do gestor do app: só o gestor e só a empresa dele (critério 6, D-03)."""
+
+    URLS_DO_APP = ["relatorio-acervo", "relatorio-contatos", "relatorio-acervo-por-corretor"]
+
+    def test_ponta_a_ponta_com_login_real_e_token(self):
+        fixar_taxa_alta_no_login(self)
+        login = self.client.post(reverse("api-login"), {"email": self.gestor.email, "password": "senha-forte-123"})
+        self.assertEqual(login.status_code, status.HTTP_200_OK)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {login.data['token']}")
+        response = self.client.get(reverse("relatorio-acervo-por-corretor"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(response.data), {"linhas", "total"})
+        self.assertEqual(response.data["total"], 4)
+        self.assertTrue(response.data["linhas"])
+        for linha in response.data["linhas"]:
+            self.assertEqual(set(linha), {"corretor_id", "corretor", "ativo", "total"})
+
+    def test_so_o_gestor_entra_nas_rotas_do_app(self):
+        casos = [(self.corretor, 403), (self.admin, 403), (None, 401), (self.gestor, 200)]
+        for usuario, esperado in casos:
+            self.client.force_authenticate(usuario)
+            for nome in self.URLS_DO_APP:
+                with self.subTest(usuario=getattr(usuario, "email", None), url=nome):
+                    self.assertEqual(self.client.get(reverse(nome)).status_code, esperado)
+
+    def test_gestor_de_outra_empresa_ve_so_as_linhas_dela(self):
+        self.client.force_authenticate(self.gestor_b)
+        dados = self.client.get(reverse("relatorio-acervo-por-corretor")).data
+        ids = {linha["corretor_id"] for linha in dados["linhas"]}
+        self.assertEqual(ids, {self.corretor_b.pk})
+        self.assertEqual(dados["total"], 2)

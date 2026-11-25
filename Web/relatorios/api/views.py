@@ -11,7 +11,10 @@ from rest_framework.views import APIView
 from core.permissions import EhGestor
 from imoveis.vitrine import FiltroInvalido
 
-from ..servicos import acervo_por_natureza_e_situacao, contatos_por_corretor, ler_dias, parcelas_em_atraso_e_a_vencer
+from ..servicos import (
+    acervo_por_corretor, acervo_por_natureza_e_situacao, contatos_por_corretor, ler_dias,
+    parcelas_em_atraso_e_a_vencer,
+)
 
 
 class RelatorioApiView(APIView):
@@ -23,6 +26,13 @@ class AcervoApiView(RelatorioApiView):
 
     def get(self, request):
         return Response(acervo_por_natureza_e_situacao(request.user.empresa_id))
+
+
+class AcervoPorCorretorApiView(RelatorioApiView):
+    """GET /api/relatorios/acervo-por-corretor/ — quantos imóveis cada corretor tem (critério 1)."""
+
+    def get(self, request):
+        return Response(acervo_por_corretor(request.user.empresa_id))
 
 
 class ContatosApiView(RelatorioApiView):
