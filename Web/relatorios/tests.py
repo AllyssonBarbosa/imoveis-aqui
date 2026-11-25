@@ -6,25 +6,31 @@ parcelas recebe o "hoje" direto, e os contatos têm data de criação fixa.
 
 import shutil
 import tempfile
-from datetime import date, datetime, timezone as tz
+from datetime import date, datetime, timedelta, timezone as tz
 from decimal import Decimal
 from pathlib import Path
 
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils.timezone import localdate
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from contas.models import Usuario
+from contas.tests import fixar_taxa_alta_no_login
 from contatos.models import Contato
 from contratos.models import Baixa
 from contratos.servicos import assinar_contrato, registrar_baixa, salvar_contrato
 from contratos.tests import ONTEM, CenarioContrato
 from contratos.tests_arquivos import gerar_pdf
-from imoveis.models import Imovel
-from imoveis.tests import criar_imovel
+from imoveis.models import HistoricoSituacao, Imovel
+from imoveis.tests import criar_corretor, criar_imovel
 from imoveis.vitrine import FiltroInvalido
 
-from .servicos import acervo_por_natureza_e_situacao, contatos_por_corretor, parcelas_em_atraso_e_a_vencer
+from .servicos import (
+    acervo_por_corretor, acervo_por_natureza_e_situacao, contatos_por_corretor, ler_dias, mudancas_de_situacao,
+    parcelas_em_atraso_e_a_vencer,
+)
 
 
 class RelatoriosBase(CenarioContrato):
@@ -259,3 +265,264 @@ class ApiRelatoriosTests(RelatoriosBase, APITestCase):
         dados = self.client.get(reverse("relatorio-contatos"), {"de": "2027-02-01", "ate": "2027-02-28"}).data
         self.assertEqual(dados["total"], 1)
         self.assertEqual(dados["linhas"][0]["corretor_id"], self.corretor.pk)
+
+
+class AcervoPorCorretorTests(RelatoriosBase, TestCase):
+    """Acervo por corretor (critério 1 do card APP12; D-12 e D-13).
+
+    Mesma base do acervo por natureza × situação: todos os imóveis da empresa, em qualquer
+    situação, publicados ou não. Todo corretor ativo aparece, mesmo com zero; o desativado que
+    ainda é responsável por imóvel aparece com `ativo` falso. Quem tem mais vem primeiro e, no
+    empate, por nome. Nada de outra empresa entra.
+    """
+
+    def linhas(self, empresa_id=None):
+        relatorio = acervo_por_corretor(empresa_id or self.empresa.pk)
+        return {linha["corretor_id"]: linha for linha in relatorio["linhas"]}, relatorio
+
+    def test_conta_por_corretor_e_corretor_ativo_sem_imovel_aparece_com_zero(self):
+        linhas, relatorio = self.linhas()
+        self.assertEqual(linhas[self.corretor.pk]["total"], 4)
+        self.assertEqual(linhas[self.corretor2.pk]["total"], 0)  # ativo, sem imóvel: aparece com zero
+        self.assertTrue(linhas[self.corretor.pk]["ativo"])
+        self.assertEqual(relatorio["total"], 4)
+
+    def test_cada_linha_tem_so_as_quatro_chaves(self):
+        for linha in acervo_por_corretor(self.empresa.pk)["linhas"]:
+            self.assertEqual(set(linha), {"corretor_id", "corretor", "ativo", "total"})
+
+    def test_soma_das_linhas_fecha_com_o_total_do_acervo_por_natureza(self):
+        relatorio = acervo_por_corretor(self.empresa.pk)
+        self.assertEqual(sum(linha["total"] for linha in relatorio["linhas"]), relatorio["total"])
+        self.assertEqual(relatorio["total"], acervo_por_natureza_e_situacao(self.empresa.pk)["total"])
+
+    def test_imovel_nao_publicado_tambem_conta(self):
+        criar_imovel(self.empresa, self.corretor2, self.casa.proprietario, codigo="RASCUNHO-1", publicado=False)
+        linhas, relatorio = self.linhas()
+        self.assertEqual(linhas[self.corretor2.pk]["total"], 1)
+        self.assertEqual(relatorio["total"], 5)
+
+    def test_gestor_sem_imovel_nao_aparece_e_outra_empresa_nunca(self):
+        linhas, _ = self.linhas()
+        self.assertNotIn(self.gestor.pk, linhas)
+        self.assertNotIn(self.corretor_b.pk, linhas)
+        self.assertEqual(set(linhas), {self.corretor.pk, self.corretor2.pk})
+
+    def test_outra_empresa_ve_so_o_corretor_dela(self):
+        linhas, relatorio = self.linhas(self.outra.pk)
+        self.assertEqual(set(linhas), {self.corretor_b.pk})
+        self.assertEqual(linhas[self.corretor_b.pk]["total"], 2)
+        self.assertEqual(relatorio["total"], 2)
+
+    def test_corretor_desativado_que_ainda_e_responsavel_aparece_como_inativo(self):
+        antigo = criar_corretor(self.empresa, email="antigo@teste.com")
+        criar_imovel(self.empresa, antigo, self.casa.proprietario, codigo="ANTIGO-1")
+        criar_imovel(self.empresa, antigo, self.casa.proprietario, codigo="ANTIGO-2")
+        Usuario.objects.filter(pk=antigo.pk).update(is_active=False)
+        linhas, relatorio = self.linhas()
+        self.assertFalse(linhas[antigo.pk]["ativo"])
+        self.assertEqual(linhas[antigo.pk]["total"], 2)
+        self.assertEqual(relatorio["total"], 6)
+
+    def test_corretor_desativado_sem_imovel_nao_aparece(self):
+        Usuario.objects.filter(pk=self.corretor2.pk).update(is_active=False)
+        linhas, _ = self.linhas()
+        self.assertNotIn(self.corretor2.pk, linhas)
+
+    def test_quem_tem_mais_vem_primeiro_e_no_empate_por_nome(self):
+        outro = criar_corretor(self.empresa, email="outro@teste.com")
+        Usuario.objects.filter(pk=self.corretor2.pk).update(nome="Zeca")
+        Usuario.objects.filter(pk=outro.pk).update(nome="Ana")
+        criar_imovel(self.empresa, self.corretor2, self.casa.proprietario, codigo="Z-1")
+        criar_imovel(self.empresa, outro, self.casa.proprietario, codigo="A-1")
+        linhas = acervo_por_corretor(self.empresa.pk)["linhas"]
+        self.assertEqual([linha["corretor_id"] for linha in linhas],
+                         [self.corretor.pk, outro.pk, self.corretor2.pk])
+        self.assertEqual([linha["total"] for linha in linhas], [4, 1, 1])
+
+
+class MudancasDeSituacaoTests(RelatoriosBase, TestCase):
+    """Mudanças de situação dos últimos dias (critério 3 do card APP12; D-19 e D-20).
+
+    Janela inclusiva no dia de São Paulo: hoje e os `dias - 1` anteriores. Só o histórico de
+    imóveis da empresa pedida; entram também as mudanças gravadas pela assinatura de contrato.
+    """
+
+    HOJE = date(2027, 1, 20)
+
+    def mudanca(self, quando, observacao, imovel=None, usuario=None):
+        """Grava uma mudança e fixa o `alterado_em` (o campo é auto_now_add)."""
+        historico = HistoricoSituacao.objects.create(
+            imovel=imovel or self.casa, situacao_anterior=Imovel.Situacao.DISPONIVEL,
+            situacao_nova=Imovel.Situacao.RESERVADO, alterado_por=usuario or self.corretor,
+            observacao=observacao,
+        )
+        HistoricoSituacao.objects.filter(pk=historico.pk).update(alterado_em=quando)
+        return historico
+
+    def observacoes(self, empresa_id=None, **extra):
+        relatorio = mudancas_de_situacao(empresa_id or self.empresa.pk, hoje=self.HOJE, **extra)
+        return [historico.observacao for historico in relatorio["mudancas"]]
+
+    def test_ler_dias_sem_valor_continua_30_e_aceita_outro_padrao(self):
+        self.assertEqual(ler_dias(""), 30)
+        self.assertEqual(ler_dias(None), 30)
+        self.assertEqual(ler_dias("", padrao=7), 7)
+        self.assertEqual(ler_dias(None, padrao=7), 7)
+        self.assertEqual(ler_dias("12", padrao=7), 12)
+
+    def test_ler_dias_invalido_levanta_filtro_invalido_com_ou_sem_padrao(self):
+        for valor in ("0", "366", "abc", "-1"):
+            for extra in ({}, {"padrao": 7}):
+                with self.subTest(valor=valor, extra=extra):
+                    with self.assertRaises(FiltroInvalido) as contexto:
+                        ler_dias(valor, **extra)
+                    self.assertIn("dias", contexto.exception.erros)
+
+    def test_janela_de_7_dias_conta_hoje_e_os_6_anteriores(self):
+        relatorio = mudancas_de_situacao(self.empresa.pk, dias=7, hoje=self.HOJE)
+        self.assertEqual(relatorio["dias"], 7)
+        self.assertEqual(relatorio["desde"], date(2027, 1, 14))
+
+    def test_padrao_de_dias_e_7(self):
+        self.assertEqual(mudancas_de_situacao(self.empresa.pk, hoje=self.HOJE)["dias"], 7)
+
+    def test_limites_da_janela_usam_o_dia_de_sao_paulo(self):
+        self.mudanca(datetime(2027, 1, 14, 2, 30, tzinfo=tz.utc), "fora-13-23h30")   # 23:30 do dia 13 em SP
+        self.mudanca(datetime(2027, 1, 14, 3, 30, tzinfo=tz.utc), "dentro-14-00h30")  # 00:30 do dia 14 em SP
+        self.mudanca(datetime(2027, 1, 20, 15, 0, tzinfo=tz.utc), "dentro-20")
+        self.mudanca(datetime(2027, 1, 21, 2, 30, tzinfo=tz.utc), "dentro-20-23h30")  # 23:30 do dia 20 em SP
+        self.mudanca(datetime(2027, 1, 21, 3, 30, tzinfo=tz.utc), "fora-21-00h30")    # 00:30 do dia 21 em SP
+        self.mudanca(datetime(2027, 1, 21, 15, 0, tzinfo=tz.utc), "fora-21")
+        self.assertEqual(
+            set(self.observacoes()), {"dentro-14-00h30", "dentro-20", "dentro-20-23h30"}
+        )
+
+    def test_dias_maior_alarga_a_janela(self):
+        self.mudanca(datetime(2027, 1, 5, 15, 0, tzinfo=tz.utc), "dia-5")
+        self.assertNotIn("dia-5", self.observacoes(dias=7))
+        self.assertIn("dia-5", self.observacoes(dias=16))
+
+    def test_so_as_mudancas_da_empresa_pedida(self):
+        self.mudanca(datetime(2027, 1, 18, 15, 0, tzinfo=tz.utc), "da-empresa-a")
+        self.mudanca(datetime(2027, 1, 18, 15, 0, tzinfo=tz.utc), "da-empresa-b",
+                     imovel=self.imovel_b, usuario=self.corretor_b)
+        self.assertEqual(self.observacoes(), ["da-empresa-a"])
+        self.assertEqual(self.observacoes(self.outra.pk), ["da-empresa-b"])
+
+    def test_ordem_mais_recente_primeiro_e_no_empate_o_maior_id(self):
+        primeira = self.mudanca(datetime(2027, 1, 18, 15, 0, tzinfo=tz.utc), "empate-1")
+        segunda = self.mudanca(datetime(2027, 1, 18, 15, 0, tzinfo=tz.utc), "empate-2")
+        self.mudanca(datetime(2027, 1, 19, 15, 0, tzinfo=tz.utc), "mais-recente")
+        self.mudanca(datetime(2027, 1, 15, 15, 0, tzinfo=tz.utc), "mais-antiga")
+        self.assertGreater(segunda.pk, primeira.pk)
+        self.assertEqual(self.observacoes(), ["mais-recente", "empate-2", "empate-1", "mais-antiga"])
+
+    def test_inclui_as_mudancas_da_assinatura_de_contrato(self):
+        relatorio = mudancas_de_situacao(self.empresa.pk)  # hoje de verdade: o setUp assinou hoje
+        pares = {
+            (historico.imovel.codigo, historico.situacao_anterior, historico.situacao_nova)
+            for historico in relatorio["mudancas"]
+        }
+        self.assertIn(("VENDA-1", Imovel.Situacao.DISPONIVEL, Imovel.Situacao.VENDIDO), pares)
+        self.assertIn(("ALUGA-1", Imovel.Situacao.DISPONIVEL, Imovel.Situacao.ALUGADO), pares)
+        self.assertNotIn("OUTRA-1", {historico.imovel.codigo for historico in relatorio["mudancas"]})
+
+
+class AreaDoGestorApiTests(RelatoriosBase, APITestCase):
+    """Rotas da Área do gestor do app: só o gestor e só a empresa dele (critério 6, D-03)."""
+
+    URLS_DO_APP = [
+        "relatorio-acervo", "relatorio-contatos", "relatorio-acervo-por-corretor", "relatorio-mudancas-situacao",
+    ]
+
+    def test_ponta_a_ponta_com_login_real_e_token(self):
+        fixar_taxa_alta_no_login(self)
+        login = self.client.post(reverse("api-login"), {"email": self.gestor.email, "password": "senha-forte-123"})
+        self.assertEqual(login.status_code, status.HTTP_200_OK)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {login.data['token']}")
+        response = self.client.get(reverse("relatorio-acervo-por-corretor"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(response.data), {"linhas", "total"})
+        self.assertEqual(response.data["total"], 4)
+        self.assertTrue(response.data["linhas"])
+        for linha in response.data["linhas"]:
+            self.assertEqual(set(linha), {"corretor_id", "corretor", "ativo", "total"})
+
+    def test_so_o_gestor_entra_nas_rotas_do_app(self):
+        casos = [(self.corretor, 403), (self.admin, 403), (None, 401), (self.gestor, 200)]
+        for usuario, esperado in casos:
+            self.client.force_authenticate(usuario)
+            for nome in self.URLS_DO_APP:
+                with self.subTest(usuario=getattr(usuario, "email", None), url=nome):
+                    self.assertEqual(self.client.get(reverse(nome)).status_code, esperado)
+
+    def test_gestor_de_outra_empresa_ve_so_as_linhas_dela(self):
+        self.client.force_authenticate(self.gestor_b)
+        dados = self.client.get(reverse("relatorio-acervo-por-corretor")).data
+        ids = {linha["corretor_id"] for linha in dados["linhas"]}
+        self.assertEqual(ids, {self.corretor_b.pk})
+        self.assertEqual(dados["total"], 2)
+
+    def test_mudancas_sem_dias_usa_7_dias_decididos_no_servidor(self):
+        self.client.force_authenticate(self.gestor)
+        response = self.client.get(reverse("relatorio-mudancas-situacao"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        dados = response.json()
+        self.assertEqual(set(dados), {"dias", "desde", "mudancas"})
+        self.assertEqual(dados["dias"], 7)
+        self.assertEqual(dados["desde"], (localdate() - timedelta(days=6)).isoformat())
+
+    def test_mudancas_trazem_a_assinatura_de_contrato_e_nao_a_outra_empresa(self):
+        self.client.force_authenticate(self.gestor)
+        mudancas = self.client.get(reverse("relatorio-mudancas-situacao")).json()["mudancas"]
+        por_codigo = {mudanca["imovel_codigo"]: mudanca for mudanca in mudancas}
+        self.assertEqual(
+            (por_codigo["VENDA-1"]["situacao_anterior"], por_codigo["VENDA-1"]["situacao_nova"]),
+            ("DISPONIVEL", "VENDIDO"),
+        )
+        self.assertEqual(
+            (por_codigo["ALUGA-1"]["situacao_anterior"], por_codigo["ALUGA-1"]["situacao_nova"]),
+            ("DISPONIVEL", "ALUGADO"),
+        )
+        self.assertEqual(por_codigo["VENDA-1"]["alterado_por"], self.gestor.nome)
+        self.assertNotIn("OUTRA-1", por_codigo)
+
+    def test_cada_mudanca_tem_so_os_nove_campos_com_hora_de_sao_paulo(self):
+        apto = Imovel.objects.get(empresa=self.empresa, codigo="APTO-1")
+        apto.mudar_situacao(Imovel.Situacao.RESERVADO, self.gestor, observacao="Cliente vai pensar")
+        self.client.force_authenticate(self.gestor)
+        mudancas = self.client.get(reverse("relatorio-mudancas-situacao")).json()["mudancas"]
+        self.assertTrue(mudancas)
+        for mudanca in mudancas:
+            self.assertEqual(
+                set(mudanca),
+                {"id", "imovel_id", "imovel_codigo", "imovel_titulo", "situacao_anterior", "situacao_nova",
+                 "alterado_por", "alterado_em", "observacao"},
+            )
+            self.assertTrue(mudanca["alterado_em"].endswith("-03:00"), mudanca["alterado_em"])
+        reserva = next(mudanca for mudanca in mudancas if mudanca["imovel_codigo"] == "APTO-1")
+        self.assertEqual(reserva["imovel_id"], apto.pk)
+        self.assertEqual(reserva["imovel_titulo"], apto.titulo)
+        self.assertEqual(reserva["observacao"], "Cliente vai pensar")
+        self.assertEqual(mudancas[0]["imovel_codigo"], "APTO-1")  # a mais recente vem primeiro
+
+    def test_dias_invalido_da_400_com_a_chave_dias(self):
+        self.client.force_authenticate(self.gestor)
+        for valor in ("0", "366", "abc"):
+            with self.subTest(dias=valor):
+                response = self.client.get(reverse("relatorio-mudancas-situacao"), {"dias": valor})
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertIn("dias", response.data)
+
+    def test_dias_valido_vale_no_lugar_do_padrao(self):
+        self.client.force_authenticate(self.gestor)
+        response = self.client.get(reverse("relatorio-mudancas-situacao"), {"dias": "30"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json()["dias"], 30)
+
+    def test_gestor_de_outra_empresa_ve_so_as_mudancas_dela(self):
+        self.client.force_authenticate(self.gestor_b)
+        mudancas = self.client.get(reverse("relatorio-mudancas-situacao")).json()["mudancas"]
+        self.assertTrue(mudancas)  # a assinatura do contrato da empresa B
+        self.assertEqual({mudanca["imovel_codigo"] for mudanca in mudancas}, {"OUTRA-1"})
