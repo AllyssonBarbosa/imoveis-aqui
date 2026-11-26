@@ -53,6 +53,19 @@ class FotoImovelSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "imovel", "capa"]
 
 
+class FotoDoImovelSerializer(serializers.ModelSerializer):
+    """Foto nas rotas aninhadas `/api/imoveis/<id>/fotos/` (APP 11): só leitura.
+
+    Quem grava é o serviço `imoveis.fotos`; `imagem` sai como URL absoluta (precisa do `request`
+    no contexto).
+    """
+
+    class Meta:
+        model = FotoImovel
+        fields = ["id", "imagem", "ordem", "capa"]
+        read_only_fields = fields
+
+
 class DetalhesSerializerBase(serializers.ModelSerializer):
     """Valida pelo full_clean do model — a regra fica num lugar só (models.py).
 

@@ -176,8 +176,13 @@ Com o servidor rodando em `http://127.0.0.1:8000`:
 | `POST /api/imoveis/` | Cadastra imóvel da própria empresa | app, corretor |
 | `GET/PUT /api/imoveis/<id>/endereco/` | Lê/grava o endereço do imóvel (cidade, CEP, latitude, longitude) | app, corretor |
 | `POST /api/imoveis/<id>/publicar/` | Publica o imóvel — recusa se faltar cidade ou coordenada | app, corretor |
-| `GET/POST /api/fotos-imovel/?imovel=<id>` | Lista e envia fotos (várias de uma vez, campo `imagens`) | app, corretor |
-| `POST /api/fotos-imovel/<id>/definir_capa/` | Marca uma foto como capa (desmarca a anterior) | app, corretor |
+| `GET /api/imoveis/<id>/fotos/` | Fotos do imóvel `[{ "id", "imagem", "ordem", "capa" }]` (`imagem` com URL absoluta), na ordem `ordem, id`; qualquer corretor da empresa do imóvel; imóvel de outra empresa → 404 | app, corretor |
+| `POST /api/imoveis/<id>/fotos/` | Envia **uma** foto por requisição (multipart, campo `imagem`; JPG, PNG ou WEBP até 5 MB; no máximo 30 por imóvel). Entra no fim da ordem (maior ordem + 1) e vira capa se o imóvel ainda não tem capa. 201 com a foto; zero ou vários arquivos, tipo, tamanho ou teto → 400 `{ "imagem": [...] }` sem gravar nada | app, corretor |
+| `PUT /api/imoveis/<id>/fotos/ordem/` | Reordena — corpo `{ "ids": [...] }` com **todas** as fotos do imóvel na ordem nova; grava `0..n-1` numa transação e devolve a lista relida; id faltando, repetido ou de outro imóvel → 400 `{ "ids": [...] }` sem mudar nada | app, corretor |
+| `POST /api/imoveis/<id>/fotos/<foto_id>/capa/` | A foto vira a única capa do imóvel; devolve a lista relida | app, corretor |
+| `DELETE /api/imoveis/<id>/fotos/<foto_id>/` | Apaga a foto e o arquivo do disco, fecha o buraco na ordem e, se era a capa, promove a próxima pela ordem; devolve a lista relida | app, corretor |
+| `GET/POST /api/fotos-imovel/?imovel=<id>` | Rota antiga (outra tarefa): lista e envia fotos (várias de uma vez, campo `imagens`). O app usa as rotas `/api/imoveis/<id>/fotos/` | corretor |
+| `POST /api/fotos-imovel/<id>/definir_capa/` | Rota antiga: marca uma foto como capa (desmarca a anterior) | corretor |
 | `GET /api/caracteristicas/` | Lista as características cadastradas pelo administrador | app, corretor |
 | `GET /api/publico/corretores/<id>/` | Perfil público do corretor (nome, CRECI, foto, telefone, WhatsApp, e-mail, apresentação); corretor desativado ou de empresa inativa dá 404 | público — vitrine (site e app) |
 | `GET /api/publico/empresas/<id>/` | Perfil público da empresa, com a lista de corretores ativos | público — vitrine (site e app) |
@@ -278,6 +283,7 @@ python manage.py semear_vitrine_dev
 - A finalidade decide o preço obrigatório: venda exige preço de venda, aluguel exige valor do aluguel, e "venda e aluguel" exige os dois.
 - **Publicar é uma ação separada de salvar**: só funciona se o imóvel tiver endereço com latitude e longitude — sem isso, recusa com mensagem clara e o imóvel continua rascunho.
 - Fotos aceitam envio múltiplo numa só requisição, guardam a ordem de chegada e têm no máximo uma marcada como capa (garantido também no banco, não só na aplicação).
+- Pelas rotas do app (`/api/imoveis/<id>/fotos/`, APP 11) as regras moram em `imoveis/fotos.py`: uma foto por requisição, no máximo 30 por imóvel, ordem = maior ordem + 1, a primeira foto vira capa, trocar a capa é atômico, reordenar exige a lista completa e apagar renumera, promove a próxima capa e tira o arquivo do disco depois do commit. Cada operação trava o imóvel (`select_for_update`) para envios simultâneos não repetirem ordem nem criarem duas capas.
 
 ## Progresso por etapa
 
