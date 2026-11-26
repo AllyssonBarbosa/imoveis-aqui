@@ -1,7 +1,8 @@
 """Fotos do imóvel pelas rotas aninhadas `/api/imoveis/<id>/fotos/` (APP 11).
 
-Cobre o serviço `imoveis.fotos` (ordem, capa única, teto, reordenação, exclusão) e as rotas
-(isolamento por empresa, perfis, envio de uma foto por requisição, respostas).
+Cobre o serviço `imoveis.fotos` (ordem, capa única, teto, reordenação, exclusão), as rotas
+(isolamento por empresa, perfis, envio de uma foto por requisição, respostas) e o critério 6:
+o que o corretor grava aparece igual na vitrine (API pública) e no site.
 """
 
 import io
@@ -22,6 +23,7 @@ from . import fotos as servico
 from .models import FotoImovel
 from .tests import (
     MediaTemporariaMixin,
+    VitrineBase,
     criar_corretor,
     criar_empresa,
     criar_gestor,
@@ -375,3 +377,64 @@ class RotasFotosTests(BaseFotos, APITestCase):
         resposta = self.client.get(reverse("foto-imovel-list"), {"imovel": self.imovel.pk})
         self.assertEqual(resposta.status_code, 200)
         self.assertEqual(set(resposta.data[0]), {"id", "imovel", "imagem", "ordem", "capa"})
+
+
+class FotosNaVitrineTests(VitrineBase):
+    """Critério 6 (FOT-06): o que o corretor grava pelas rotas aninhadas é o que a vitrine e o site
+    mostram — mesma capa e mesma sequência (capa primeiro, depois a ordem do corretor)."""
+
+    def setUp(self):
+        super().setUp()
+        FotoImovel.objects.filter(imovel=self.casa).delete()  # começa sem fotos
+        self.client.force_authenticate(self.corretor)
+
+    def enviar_pela_rota(self):
+        resposta = self.client.post(
+            reverse("imovel-fotos", args=[self.casa.pk]), {"imagem": [imagem_jpeg()]},
+            format="multipart",
+        )
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED, resposta.data)
+        return FotoImovel.objects.get(pk=resposta.data["id"])
+
+    def sequencia_publica(self):
+        """URLs (sem o host) na API pública, a capa do cartão e a galeria do site."""
+        def sem_host(url):
+            return url.removeprefix("http://testserver")
+
+        detalhe = self.client.get(reverse("publico-imovel", args=[self.casa.pk])).data["fotos"]
+        busca = self.client.get(reverse("publico-vitrine-cidade", args=[self.sp.pk])).data["results"]
+        cartao = next(item for item in busca if item["id"] == self.casa.pk)
+        site = self.client.get(reverse("site_publico:imovel", args=[self.casa.pk]))
+        return (
+            [sem_host(foto["imagem"]) for foto in detalhe],
+            sem_host(cartao["foto_capa"]),
+            [sem_host(foto["imagem"]) for foto in site.context["imovel"]["fotos"]],
+        )
+
+    def test_ordem_e_capa_gravadas_pelo_corretor_aparecem_na_vitrine_e_no_site(self):
+        a, b, c = self.enviar_pela_rota(), self.enviar_pela_rota(), self.enviar_pela_rota()
+        self.client.put(
+            reverse("imovel-fotos-ordem", args=[self.casa.pk]), {"ids": [c.pk, a.pk, b.pk]},
+            format="json",
+        )
+        self.client.post(reverse("imovel-fotos-capa", args=[self.casa.pk, b.pk]))
+
+        esperado = [b.imagem.url, c.imagem.url, a.imagem.url]  # capa, depois a ordem c, a
+        detalhe, capa_do_cartao, site = self.sequencia_publica()
+        self.assertEqual(detalhe, esperado)
+        self.assertEqual(site, esperado)
+        self.assertEqual(capa_do_cartao, b.imagem.url)
+
+    def test_apagar_a_capa_muda_a_capa_na_vitrine_e_no_site(self):
+        a, b, c = self.enviar_pela_rota(), self.enviar_pela_rota(), self.enviar_pela_rota()
+        self.client.put(
+            reverse("imovel-fotos-ordem", args=[self.casa.pk]), {"ids": [c.pk, a.pk, b.pk]},
+            format="json",
+        )
+        self.client.post(reverse("imovel-fotos-capa", args=[self.casa.pk, b.pk]))
+        self.client.delete(reverse("imovel-foto", args=[self.casa.pk, b.pk]))
+
+        detalhe, capa_do_cartao, site = self.sequencia_publica()
+        self.assertEqual(detalhe, [c.imagem.url, a.imagem.url])  # c promovida (primeira na ordem)
+        self.assertEqual(site, detalhe)
+        self.assertEqual(capa_do_cartao, c.imagem.url)

@@ -1,12 +1,13 @@
+import re
 from unittest import mock
 
 from django.urls import reverse
 from rest_framework import status
 
-from imoveis.models import Imovel
+from imoveis.models import FotoImovel, Imovel
 from imoveis.tests import (
     VitrineBase, criar_corretor, criar_empresa, criar_endereco, criar_gestor, criar_imovel,
-    criar_proprietario, publicar_lote_da_vitrine,
+    criar_proprietario, gerar_imagem, publicar_lote_da_vitrine,
 )
 from imoveis.vitrine import ORDENACOES
 from localizacao.models import Cidade
@@ -136,6 +137,25 @@ class VitrineSiteTests(SiteBase):
 
 class PaginaImovelTests(SiteBase):
     """Critério 3: galeria, dados da natureza, valores e mapa."""
+
+    def test_galeria_comeca_pela_capa_e_segue_a_ordem_como_a_api(self):
+        # APP 11: a casa tem a foto de ordem 0 e a capa na de ordem 1; entra mais uma, de ordem 2
+        extra = FotoImovel.objects.create(imovel=self.casa, imagem=gerar_imagem(), ordem=2)
+        capa = self.casa.fotos.get(capa=True)
+        primeira = self.casa.fotos.get(ordem=0)
+        esperado = [capa.imagem.url, primeira.imagem.url, extra.imagem.url]
+
+        response = self.pagina("imovel", self.casa.pk)
+        no_site = [foto["imagem"] for foto in response.context["imovel"]["fotos"]]
+        self.assertEqual([url.removeprefix("http://testserver") for url in no_site], esperado)
+        # a foto grande da galeria é a capa, e as miniaturas seguem a mesma sequência
+        html = response.content.decode()
+        principal = re.search(r'<img src="([^"]+)"[^>]*data-galeria-principal', html).group(1)
+        self.assertEqual(principal, no_site[0])
+        self.assertEqual(re.findall(r'data-galeria-foto="([^"]+)"', html), no_site)
+        # mesma sequência do detalhe público que o app usa
+        na_api = self.client.get(reverse("publico-imovel", args=[self.casa.pk])).data["fotos"]
+        self.assertEqual([foto["imagem"] for foto in na_api], no_site)
 
     def test_casa_com_galeria_valores_dados_e_mapa(self):
         response = self.pagina("imovel", self.casa.pk)

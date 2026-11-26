@@ -12,6 +12,7 @@ redireciona para o WhatsApp, o telefone ou o e-mail (ver contatos/servicos.py).
 """
 
 from django.core.paginator import Paginator
+from django.db.models import Prefetch
 from django.http import HttpResponseBadRequest, HttpResponseRedirect
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
@@ -23,7 +24,7 @@ from contatos.servicos import CanalIndisponivel, canais_disponiveis, link_whatsa
 from empresas.api.serializers import EmpresaPublicaSerializer
 from empresas.models import Empresa
 from imoveis.api.serializers import ImovelVitrineDetalheSerializer, ImovelVitrineSerializer
-from imoveis.models import Caracteristica, Imovel
+from imoveis.models import Caracteristica, FotoImovel, Imovel
 from imoveis.vitrine import (
     IMOVEIS_POR_PAGINA, FiltroInvalido, buscar_na_vitrine, cidades_atendidas, imoveis_da_empresa,
     imoveis_da_vitrine, imoveis_do_corretor,
@@ -113,7 +114,12 @@ def imovel(request, pk):
         imoveis_da_vitrine().select_related(
             "empresa", "endereco__cidade", "corretor_responsavel__empresa", "casa", "terreno",
             "apartamento__predio__endereco__cidade", "lote__quadra__loteamento",
-        ).prefetch_related("fotos", "caracteristicas"),
+        ).prefetch_related(
+            # capa primeiro e depois a ordem do corretor — a mesma sequência do detalhe da API
+            # pública que o app usa (APP 11)
+            Prefetch("fotos", queryset=FotoImovel.objects.order_by("-capa", "ordem", "id")),
+            "caracteristicas",
+        ),
         pk=pk,
     )
     dados = ImovelVitrineDetalheSerializer(objeto, context={"request": request}).data
