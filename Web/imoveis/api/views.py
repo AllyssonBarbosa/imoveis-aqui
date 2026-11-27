@@ -18,6 +18,7 @@ from core.throttles import ThrottleVitrinePublica
 from empresas.models import Empresa
 from localizacao.models import Cidade
 
+from .. import fotos as servico_fotos
 from ..forms import FiltroImovelForm
 from ..models import (
     Caracteristica,
@@ -41,6 +42,7 @@ from .serializers import (
     CaracteristicaSerializer,
     DocumentoImovelSerializer,
     EnderecoSerializer,
+    FotoDoImovelSerializer,
     FotoImovelSerializer,
     HistoricoSituacaoSerializer,
     ImovelAcervoSerializer,
@@ -135,6 +137,76 @@ class ImovelViewSet(EmpresaScopedQuerySetMixin, viewsets.ModelViewSet):
         imovel = self.get_object()
         mudancas = imovel.historico_situacao.select_related("alterado_por")
         return Response(HistoricoSituacaoSerializer(mudancas, many=True).data)
+
+    # --- Fotos do imóvel (APP 11) ---------------------------------------------------------------
+    # Qualquer corretor da empresa do imóvel (o `get_object` já recorta pela empresa: imóvel de
+    # outra empresa cai no 404). As regras ficam em `imoveis/fotos.py`; aqui só entra e sai HTTP.
+    # A rota antiga `/api/fotos-imovel/` (FotoImovelViewSet) continua como está.
+
+    def _lista_de_fotos(self, imovel):
+        fotos = servico_fotos.fotos_do_imovel(imovel)
+        dados = FotoDoImovelSerializer(fotos, many=True, context=self.get_serializer_context()).data
+        return Response(dados)
+
+    @staticmethod
+    def _foto_do_imovel(imovel, foto_id):
+        """Foto de outro imóvel (mesmo da mesma empresa) cai no 404."""
+        return get_object_or_404(FotoImovel, pk=foto_id, imovel=imovel)
+
+    @staticmethod
+    def _recusa(erro):
+        """`ValidationError` do serviço ou do `full_clean` → 400 com as mensagens por campo."""
+        if hasattr(erro, "error_dict"):
+            return Response(erro.message_dict, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"imagem": erro.messages}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=["get", "post"], url_path="fotos", url_name="fotos")
+    def fotos(self, request, pk=None):
+        """GET: fotos na ordem do servidor. POST: envia UMA foto (multipart, campo `imagem`)."""
+        imovel = self.get_object()
+        if request.method == "GET":
+            return self._lista_de_fotos(imovel)
+
+        arquivos = request.FILES.getlist("imagem")
+        if len(arquivos) != 1:
+            return Response(
+                {"imagem": ["Envie exatamente uma imagem por requisição."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            foto = servico_fotos.adicionar_foto(imovel, arquivos[0])
+        except DjangoValidationError as erro:
+            return self._recusa(erro)
+        dados = FotoDoImovelSerializer(foto, context=self.get_serializer_context()).data
+        return Response(dados, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["put"], url_path="fotos/ordem", url_name="fotos-ordem")
+    def fotos_ordem(self, request, pk=None):
+        """Recebe `{"ids": [...]}` com todas as fotos do imóvel na ordem nova; devolve a lista relida."""
+        imovel = self.get_object()
+        ids = request.data.get("ids") if isinstance(request.data, dict) else None
+        try:
+            servico_fotos.reordenar_fotos(imovel, ids)
+        except DjangoValidationError as erro:
+            return self._recusa(erro)
+        return self._lista_de_fotos(imovel)
+
+    @action(
+        detail=True, methods=["post"], url_path=r"fotos/(?P<foto_id>\d+)/capa",
+        url_name="fotos-capa",
+    )
+    def fotos_capa(self, request, pk=None, foto_id=None):
+        """A foto vira a única capa do imóvel; devolve a lista relida."""
+        imovel = self.get_object()
+        servico_fotos.definir_capa(self._foto_do_imovel(imovel, foto_id))
+        return self._lista_de_fotos(imovel)
+
+    @action(detail=True, methods=["delete"], url_path=r"fotos/(?P<foto_id>\d+)", url_name="foto")
+    def foto(self, request, pk=None, foto_id=None):
+        """Apaga a foto (e o arquivo); a ordem fecha e a capa é promovida se precisar."""
+        imovel = self.get_object()
+        servico_fotos.apagar_foto(self._foto_do_imovel(imovel, foto_id))
+        return self._lista_de_fotos(imovel)
 
     @action(detail=True, methods=["get", "put"])
     def endereco(self, request, pk=None):

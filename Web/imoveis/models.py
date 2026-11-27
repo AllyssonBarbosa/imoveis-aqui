@@ -278,11 +278,14 @@ class FotoImovel(models.Model):
         return f"Foto {self.ordem} de {self.imovel}"
 
     def definir_como_capa(self):
-        FotoImovel.objects.filter(imovel_id=self.imovel_id, capa=True).exclude(pk=self.pk).update(
-            capa=False
-        )
-        self.capa = True
-        self.save(update_fields=["capa"])
+        # Numa transação só: desmarcar a capa antiga e marcar a nova acontecem juntos ou nenhum
+        # dos dois (a regra `uma_capa_por_imovel` exige desmarcar antes de marcar).
+        with transaction.atomic():
+            FotoImovel.objects.filter(imovel_id=self.imovel_id, capa=True).exclude(
+                pk=self.pk
+            ).update(capa=False)
+            self.capa = True
+            self.save(update_fields=["capa"])
 
 
 def _area_positiva():
